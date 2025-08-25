@@ -1,4 +1,5 @@
-use tauri::{AppHandle, Manager};
+use serde_json::json;
+use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use uuid::Uuid;
 
@@ -10,110 +11,122 @@ pub mod download;
 pub mod download_manager;
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-// #[tauri::command]
-// fn greet(name: &str) -> String {
-//     format!("Hello, {}! You've been greeted from Rust!", name)
-// }
-
 pub fn run() {
-    let mut builder = tauri::Builder::default();
-
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            let _ = app
-                .get_webview_window("main")
-                .expect("no main window")
-                .set_focus();
-        }));
-    }
-
-    builder
+    tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Handle deep link when a second instance is launched (warm start)
+            if let Some(url_str) = args.iter().find(|arg| arg.starts_with("tur://")) {
+                handle_deep_link(app, url_str);
+            }
+
+            // Always focus main window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .setup(|app| {
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    handle_deep_link(app.handle(), url.as_str());
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-// #[cfg_attr(mobile, tauri::mobile_entry_point)]
-// pub fn run() {
-//     tauri::Builder::default()
-//     .plugin(tauri_plugin_single_instance::init())
-//     // .plugin(tauri::Builder::default().build())
-//     .setup(|app| Ok(()))
-//     .invoke_handler(tauri::generate_handler![handle_instance])
-//     .run(tauri::generate_context!())
-//     .expect("run");
-// }
+fn handle_deep_link(app: &tauri::AppHandle, url_str: &str) {
+    let parsed = match url::Url::parse(url_str) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
 
-// #[cfg_attr(mobile, tauri::mobile_entry_point)]
-// pub fn run() {
-//     tauri::Builder::default()
-// .plugin(tauri_plugin_deep_link::init())
-// .plugin(tauri_plugin_store::Builder::new().build())
-//         .plugin(tauri_plugin_opener::init())
-//         .invoke_handler(tauri::generate_handler![greet])
-//         .run(tauri::generate_context!())
-//         .expect("error while running tauri application");
-// }
+    // TODO reading other header etag, last-modified, partial-content etc
+    let src_url = match parsed.query_pairs().find(|(k, _)| k == "url") {
+        Some((_, v)) => v.to_string(),
+        _ => return,
+    };
+    let filename = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "filename")
+        .map(|(_, v)| v.to_string());
+    let size_opt = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "size")
+        .and_then(|(_, v)| v.parse::<u64>().ok());
+
+    // Read settings from store
+    let store = tauri_plugin_store::StoreExt::store(app, "settings.json").unwrap();
+
+    let instance_cfg = InstanceConfig {
+        download: store
+            .get("download")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap(),
+        thread: store
+            .get("threads")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap(),
+        session: store
+            .get("session")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap(),
+    };
+
+    let id = uuid::Uuid::now_v7();
+
+    // Start work with settings from store
+    let target = InstanceTarget::Urls(vec![src_url.clone()]);
+    handle_instance(instance_cfg, target); // Call your existing function
+
+
+    let _ = app.emit(
+        "download-request", // show UI for start and cancel
+        json!({
+            "id": id,
+            "url": src_url, // might not be needed
+            "filename": filename,
+            "size": size_opt
+        }),
+    );
+}
 
 // ------------------------------------------
-
-// #[tauri::command]
-// fn get_config(
-//     store: State<tauri_plugin_store::Store<tauri::Wry>>,
-//     key: String,
-// ) -> Result<serde_json::Value, String> {
-//     store.get(&key).ok_or("Key not found".to_string())
-// }
-
-// #[tauri::command]
-// fn set_config(
-//     store: State<tauri_plugin_store::Store<tauri::Wry>>,
-//     key: String,
-//     value: serde_json::Value,
-// ) -> Result<(), String> {
-//     store.set(&key, value);
-//     Ok(())
-// }
-// #[derive(Default)]
-// struct MyState {
-//   s: std::sync::Mutex<String>,
-//   t: std::sync::Mutex<std::collections::HashMap<String, String>>,
-// }
-// // remember to call `.manage(MyState::default())`
-// #[tauri::command]
-// async fn command_name(state: tauri::State<'_, MyState>) -> Result<(), String> {
-//   *state.s.lock().unwrap() = "new string".into();
-//   state.t.lock().unwrap().insert("key".into(), "value".into());
-//   Ok(())
-// }
 
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum InstanceTarget {
     Urls(Vec<String>),
     Uuids(Vec<Uuid>),
+    // new, (via new button/dragNdrop, non-encoded url, prep client and fetch headers)
+    // deep-link (encoded url, prep client and start)
+    // resume, (from frontend via history, via uuid, prep client) if sends url back then it could be workz
 }
 
-// store configs
-// let instance_cfg = InstanceConfig::from(&app_config);
 // for new instances
+// creating instance of Download push it's handle to DMan
 #[tauri::command]
-async fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
+fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
     match target {
         InstanceTarget::Urls(urls) => {
             // --- new_instance
-            // all headers comes in
+            //    url comes in only via new button
+            // OR all headers comes in deep link browser extension
+
+
             // save info to db, get from tauri store and send info to start instance
         }
         InstanceTarget::Uuids(uuids) => {
-            // --- resume_instance (for resuming old instances)
+            // --- resume_instance (for resuming old instances, headers aren't available)
             // History shows
             // uuid(not shown but there), Name, Status, Date,
             // so frontend sends back uuid
 
-            // from store
-            // conns
+            // frontend sends Instance Config for settings
 
             // get from db via uuid
             // uuid (came from frontend)
@@ -126,32 +139,35 @@ async fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
 
             // check file existance on dest. location, if not there start from scratch via Download::new(id, size, num_conn)
 
-            // what's need to start work
+            // prep asyn client
 
-            // Download::load(apphandle, uuid)
-
-            // first emit (as req. came we check dest. & metadata then emit and start client)
+            // 1st .emit("queue_work") (as req. came we check dest. & metadata then emit and start client)
             // uuid
             // filename
             // size
             // url
 
-            // second emit (client.await is completed, we check etag/last modified, emit resume, client starts working)
+            // await client, get header match
+
+            // 2nd .emit("queue_work") (client.await is completed, we check etag/last modified, emit resume, client starts working)
             // resume
             // Etag
             // Last-Modified
+
+            // Download() starts
         }
     }
 }
 
+// TODO removal after impl. the uuid to emit and listen for events
 // for instances that are already in history
-#[tauri::command]
-fn instance_action(id: Vec<usize>, action: u8) {
-    // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
-    match action {
-        // 0 => engine::DownloadManager::pause_instance(id),
-        // 1 => engine::DownloadManager::start_instance(id),
-        // 2 => engine::DownloadManager::cancel_instance(id),
-        _ => unreachable!(),
-    }
-}
+// #[tauri::command]
+// fn instance_action(id: Vec<usize>, action: u8) {
+//     // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
+//     match action {
+//         // 0 => engine::DownloadManager::pause_instance(id),
+//         // 1 => engine::DownloadManager::start_instance(id),
+//         // 2 => engine::DownloadManager::cancel_instance(id),
+//         _ => unreachable!(),
+//     }
+// }

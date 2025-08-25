@@ -4,9 +4,3 @@
 fn main() {
     tur_lib::run()
 }
-
-// destructors (Drop trait)
-// Download for bincode + store
-// DM -> close all handles via cancel calls, db conn then drop self
-
-// DM -> <JoinHandle, Watch>

@@ -154,7 +154,6 @@ impl<Context> Decode<Context> for Download {
 impl Download {
     pub fn new(id: Uuid, size: usize, num_conn: u8) -> Self {
         Download {
-            // id,
             range: VecDeque::with_capacity((PHI * num_conn as f32).round() as usize),
             coordinator: Coordinator::new(Self::get_index(size >> 23).unwrap()),
         }
@@ -221,6 +220,7 @@ impl Download {
 
     fn run_instance<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> Vec<JoinHandle<()>> {
         // TODO: Read from tauri store instead of hardcoding
+        // the solution: InstanceConfig is available
 
         let conns = 8;
         let count = 8;
