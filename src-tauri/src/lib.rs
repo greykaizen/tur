@@ -1,9 +1,11 @@
+use reqwest::Client;
 use serde_json::json;
+use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use uuid::Uuid;
 
-use crate::config::InstanceConfig;
+use crate::{config::InstanceConfig, download_manager::DownloadManager};
 
 pub mod config;
 pub mod db;
@@ -13,6 +15,7 @@ pub mod download_manager;
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(DownloadManager::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -30,9 +33,13 @@ pub fn run() {
         .setup(|app| {
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
+                    // TODO change the url.as_str() to normal url being passes
                     handle_deep_link(app.handle(), url.as_str());
                 }
             }
+
+            // let DMan object then app.manage()
+
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -80,9 +87,8 @@ fn handle_deep_link(app: &tauri::AppHandle, url_str: &str) {
     let id = uuid::Uuid::now_v7();
 
     // Start work with settings from store
-    let target = InstanceTarget::Urls(vec![src_url.clone()]);
-    handle_instance(instance_cfg, target); // Call your existing function
-
+    let target = InstanceTarget::deep_link(vec![src_url.clone()]);
+    // handle_instance(instance_cfg, target); // Call your existing function
 
     let _ = app.emit(
         "download-request", // show UI for start and cancel
@@ -91,6 +97,7 @@ fn handle_deep_link(app: &tauri::AppHandle, url_str: &str) {
             "url": src_url, // might not be needed
             "filename": filename,
             "size": size_opt
+            // partial content resume YES/NO
         }),
     );
 }
@@ -100,27 +107,115 @@ fn handle_deep_link(app: &tauri::AppHandle, url_str: &str) {
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum InstanceTarget {
-    Urls(Vec<String>),
-    Uuids(Vec<Uuid>),
-    // new, (via new button/dragNdrop, non-encoded url, prep client and fetch headers)
-    // deep-link (encoded url, prep client and start)
-    // resume, (from frontend via history, via uuid, prep client) if sends url back then it could be workz
+    /// --- new_instance
+    ///     url comes in only via new button
+    new(Vec<String>),
+    resume(Vec<Uuid>),
+    deep_link(Vec<String>),
 }
 
 // for new instances
 // creating instance of Download push it's handle to DMan
 #[tauri::command]
-fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
+async fn handle_instance(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DownloadManager>,
+    instance_cfg: InstanceConfig,
+    target: InstanceTarget,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // do prep client (outside match arms)
+    let client = Client::builder() // Connection & Performance
+        .timeout(Duration::from_secs(300)) // 5min total timeout (vs 30s default)
+        .connect_timeout(Duration::from_secs(10)) // Connection establishment timeout
+        .pool_max_idle_per_host(10) // Keep more connections alive (default: varies)
+        .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
+        .tcp_keepalive(Duration::from_secs(60)) // Keep TCP connections alive
+        // Download-specific
+        // .gzip(true) // Auto decompress (default: true)
+        // .brotli(true) // Brotli compression support (default: true)
+        // .deflate(true) // Deflate compression (default: true)
+        // Headers & User Agent
+        .user_agent("MyDownloader/1.0") // Custom user agent (default: reqwest/version)
+        // Redirects
+        .redirect(reqwest::redirect::Policy::limited(10)) // Max redirects (default: 10)
+        // Security (if needed)
+        .danger_accept_invalid_certs(false) // Only if you need it (default: false)
+        .https_only(false) // Allow HTTP (default: false)
+        // HTTP/2
+        .http2_adaptive_window(true) // Use HTTP/2 if server supports
+        .build()
+        .expect("client builder failed");
+
     match target {
-        InstanceTarget::Urls(urls) => {
-            // --- new_instance
-            //    url comes in only via new button
-            // OR all headers comes in deep link browser extension
+        InstanceTarget::new(urls) => {
+            // received vec
+            for url in urls {
+                // .get().send() (inside arm)
+                let response = client.get(&url).send();
 
+                // await client for work on between
+                let client = response.await?;
+                // load headers via client
+                let headers = client.headers();
+                let filename = headers
+                    .get(reqwest::header::CONTENT_DISPOSITION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|cd| {
+                        cd.split(';').find_map(|p| {
+                            p.trim()
+                                .strip_prefix("filename=")
+                                .map(|s| s.trim_matches('"').to_string())
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        url.rsplit('/')
+                            .next()
+                            .and_then(|s| s.split('?').next())
+                            .unwrap_or("download")
+                            .to_string()
+                    });
+                let size = headers
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok());
+                let resume = headers
+                    .get(reqwest::header::ACCEPT_RANGES)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.eq_ignore_ascii_case("bytes"))
+                    .unwrap_or(false);
+                let etag = headers
+                    .get(reqwest::header::ETAG)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let last_modified = headers
+                    .get(reqwest::header::LAST_MODIFIED)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
 
-            // save info to db, get from tauri store and send info to start instance
+                // generate ID
+                let id = Uuid::now_v7();
+
+                // emit full
+                let payload = json!({
+                    "id": id,
+                    "url": url, // might not be needed
+                    "filename": filename,
+                    "size": size,
+                    "resume": resume,
+                    "etag": etag,
+                    "last-modified": last_modified
+                });
+                if let Err(e) = app.emit("queue_download", payload) {
+                    eprintln!("failed to emit event: {}", e);
+                }
+
+                // start work
+                // DMan create Download instance then db store, push to vec and call it's run_instance
+            }
+
+            Ok(())
         }
-        InstanceTarget::Uuids(uuids) => {
+        InstanceTarget::resume(uuids) => {
             // --- resume_instance (for resuming old instances, headers aren't available)
             // History shows
             // uuid(not shown but there), Name, Status, Date,
@@ -139,7 +234,7 @@ fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
 
             // check file existance on dest. location, if not there start from scratch via Download::new(id, size, num_conn)
 
-            // prep asyn client
+            // // prep asyn client
 
             // 1st .emit("queue_work") (as req. came we check dest. & metadata then emit and start client)
             // uuid
@@ -155,6 +250,92 @@ fn handle_instance(instance_cfg: InstanceConfig, target: InstanceTarget) {
             // Last-Modified
 
             // Download() starts
+
+            // ---
+            // received vec
+
+            // loop vec
+            // workmanager job, need a state for it
+            // load existing record via uuid, match if right for use else redo connection (InstanceTarget::new) or
+            //
+            for uuid in uuids {
+                // .get().send() (inside arm)
+                // let response = client.get(&url).send();
+
+                // await client for work on between
+                // let client = response.await?;
+
+                // load headers via client
+                // let headers = client.headers();
+                // let filename = headers
+                //     .get(reqwest::header::CONTENT_DISPOSITION)
+                //     .and_then(|v| v.to_str().ok())
+                //     .and_then(|cd| {
+                //         cd.split(';').find_map(|p| {
+                //             p.trim()
+                //                 .strip_prefix("filename=")
+                //                 .map(|s| s.trim_matches('"').to_string())
+                //         })
+                //     })
+                //     .unwrap_or_else(|| {
+                //         url.rsplit('/')
+                //             .next()
+                //             .and_then(|s| s.split('?').next())
+                //             .unwrap_or("download")
+                //             .to_string()
+                //     });
+                // let size = headers
+                //     .get(reqwest::header::CONTENT_LENGTH)
+                //     .and_then(|v| v.to_str().ok())
+                //     .and_then(|s| s.parse::<u64>().ok());
+                // let resume = headers
+                //     .get(reqwest::header::ACCEPT_RANGES)
+                //     .and_then(|v| v.to_str().ok())
+                //     .map(|s| s.eq_ignore_ascii_case("bytes"))
+                //     .unwrap_or(false);
+                // let etag = headers
+                //     .get(reqwest::header::ETAG)
+                //     .and_then(|v| v.to_str().ok())
+                //     .map(|s| s.to_string());
+                // let last_modified = headers
+                //     .get(reqwest::header::LAST_MODIFIED)
+                //     .and_then(|v| v.to_str().ok())
+                //     .map(|s| s.to_string());
+
+                // // generate ID
+                // let id = Uuid::now_v7();
+
+                // // emit full
+                // let payload = json!({
+                //     "id": id,
+                //     "url": url, // might not be needed
+                //     "filename": filename,
+                //     "size": size,
+                //     "resume": resume,
+                //     "etag": etag,
+                //     "last-modified": last_modified
+                // });
+                // if let Err(e) = app.emit("queue_download", payload) {
+                //     eprintln!("failed to emit event: {}", e);
+                // }
+            }
+            // await client
+            // via client load headers
+            // emit twice
+            // start work
+            Ok(())
+        }
+        InstanceTarget::deep_link(encoded_urls) => {
+            // received vec
+
+            // // loop vec
+            // decode urls + headers(for emit only)
+            // .get().send() (inside arm)
+
+            // emit full
+            // await client
+            // start work
+            Ok(())
         }
     }
 }

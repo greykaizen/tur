@@ -9,6 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::config::InstanceConfig;
+
 const PHI: f32 = 1.618033988749895;
 // 2504730781958 to 2199023255552 for 64 bit limit
 // based on 2^64/2^20/8
@@ -218,16 +220,19 @@ impl Download {
         (lo < RANGE.len()).then_some(lo as u8)
     }
 
-    fn run_instance<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> Vec<JoinHandle<()>> {
+    pub async fn work(){
+        let client = reqwest::Client::new();
+        let res = client.get("https://example.com").send();
+        let resp = res.await.unwrap();
+    }
+    
+    fn run_instance<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, config: InstanceConfig) -> Vec<JoinHandle<()>> {
         // TODO: Read from tauri store instead of hardcoding
         // the solution: InstanceConfig is available
 
-        let conns = 8;
-        let count = 8;
-        let buffer_size = 32; // Increased buffer for better throughput
-
         // Create coordination channel
-        let (tx, rx) = mpsc::channel::<oneshot::Sender<Arc<Index>>>(buffer_size);
+        // TODO do we need onshot or could we emit/listen to same ID
+        let (tx, rx) = mpsc::channel::<oneshot::Sender<Arc<Index>>>(config.download.socket_buffer_size); // Increased buffer for better throughput
 
         let mut handles = Vec::new();
 
@@ -239,7 +244,7 @@ impl Download {
         }));
 
         // Spawn worker tasks
-        for i in 0..conns {
+        for i in 0..config.download.num_threads {
             let worker_tx = tx.clone();
             let worker_handle = handle.clone();
             handles.push(tokio::spawn(async move {

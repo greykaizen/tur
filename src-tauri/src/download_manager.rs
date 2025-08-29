@@ -1,4 +1,5 @@
-use tokio::task::JoinHandle;
+use std::sync::Mutex;
+use tokio::task::JoinSet;
 
 #[cfg(unix)]
 use tokio::signal::{self, unix::SignalKind};
@@ -10,19 +11,19 @@ enum _ControlCommand {
 }
 
 //  TODO tauri store read to memory and push new changes design
-pub struct DownloadManager<R: tauri::Runtime> {
+#[derive(Default)]
+pub struct DownloadManager {
     // db_conn: Connection,
-    pub app_handle: tauri::AppHandle<R>,
-    pub instances: Vec<JoinHandle<()>>
+    pub instances: Mutex<JoinSet<()>>,
 }
 
-impl<R: tauri::Runtime> DownloadManager<R> {
-    pub fn new(app_handle: tauri::AppHandle<R>) -> Self {
-        DownloadManager {
-            app_handle,
-            instances: Vec::new(),
-        }
-    }
+impl DownloadManager {
+    pub fn new() -> Self { Self::default() }
+    // pub fn new() -> Self {
+    //     DownloadManager {
+    //         instances: Mutex::new(Vec::new()),
+    //     }
+    // }
 
     fn _save_record() {
         // use db to store record
@@ -31,9 +32,9 @@ impl<R: tauri::Runtime> DownloadManager<R> {
     // if id exist in DM, watch signal send to 0/1/2
     // on instances that are already in history
     // pub fn exec_instance_action(id: Vec<usize>, action: u8) {
-        // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
-        // id checked in DM, call necessary action 0/1/2
-        // if id is not in the DM and action called do nothing except for start action where we init_instance
+    // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
+    // id checked in DM, call necessary action 0/1/2
+    // if id is not in the DM and action called do nothing except for start action where we init_instance
     // }
 
     // this line up don't make sense as well
