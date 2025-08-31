@@ -1,8 +1,11 @@
 use std::sync::Mutex;
+use tauri::Manager;
 use tokio::task::JoinSet;
 
 #[cfg(unix)]
 use tokio::signal::{self, unix::SignalKind};
+
+use crate::db::DownloadDb;
 enum _ControlCommand {
     Resume,
     Pause,
@@ -11,42 +14,25 @@ enum _ControlCommand {
 }
 
 //  TODO tauri store read to memory and push new changes design
-#[derive(Default)]
 pub struct DownloadManager {
-    // db_conn: Connection,
-    pub instances: Mutex<JoinSet<()>>,
+    db: DownloadDb,
+    instances: Mutex<JoinSet<()>>, // uuid ain't needed if joinset auto drop on finish
 }
 
 impl DownloadManager {
-    pub fn new() -> Self { Self::default() }
-    // pub fn new() -> Self {
-    //     DownloadManager {
-    //         instances: Mutex::new(Vec::new()),
-    //     }
-    // }
-
-    fn _save_record() {
-        // use db to store record
+    pub fn new(app_handle: &tauri::AppHandle) -> anyhow::Result<Self> {
+        let db_path = app_handle.path().app_data_dir()?.join("tur.db");
+        Ok(Self {
+            db: DownloadDb::new(&db_path)?,
+            instances: Mutex::new(JoinSet::new()),
+        })
     }
-
-    // if id exist in DM, watch signal send to 0/1/2
-    // on instances that are already in history
-    // pub fn exec_instance_action(id: Vec<usize>, action: u8) {
-    // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
-    // id checked in DM, call necessary action 0/1/2
-    // if id is not in the DM and action called do nothing except for start action where we init_instance
-    // }
-
-    // this line up don't make sense as well
-    // pub fn cancel_instance(id: Vec<usize>) {}
-    // pub fn start_instance(id: Vec<usize>) {}
-    // pub fn pause_instance(id: Vec<usize>) {}
 
     // replace shutdown_all() with Drop trait
     async fn _start_signal_handler(&self) {
         #[cfg(unix)]
         {
-            let mut sigterm = signal::unix::signal(SignalKind::terminate()).unwrap();
+            let mut _sigterm = signal::unix::signal(SignalKind::terminate()).unwrap();
             // let mut sigint = signal::unix::signal(SignalKind::interrupt()).unwrap();
 
             // TODO select! issue
@@ -69,7 +55,7 @@ impl DownloadManager {
     }
 
     // TODO: remove shutdown after shutdown logic is done
-    fn shutdown_all(&self) {} // cancel each instance, not .abort()
+    fn _shutdown_all(&self) {} // cancel each instance, not .abort()
 }
 
 // impl Drop for DownloadManager {

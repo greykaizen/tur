@@ -15,12 +15,13 @@ pub mod download_manager;
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(DownloadManager::default())
+        // .manage(DownloadManager::new())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Handle deep link when a second instance is launched (warm start)
             if let Some(url_str) = args.iter().find(|arg| arg.starts_with("tur://")) {
+                // TODO needs fixing here to Instancetarget::deep_link()
                 handle_deep_link(app, url_str);
             }
 
@@ -31,15 +32,20 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // Initialize WorkManager/DownloadManager here
+            let work_manager =
+                DownloadManager::new(app.handle()).expect("Failed to initialize DownloadManager");
+            app.manage(work_manager);
+
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
+                    // TODO needs fixing here to Instancetarget::deep_link()
                     // TODO change the url.as_str() to normal url being passes
                     handle_deep_link(app.handle(), url.as_str());
                 }
             }
 
             // let DMan object then app.manage()
-
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -119,7 +125,7 @@ enum InstanceTarget {
 #[tauri::command]
 async fn handle_instance(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DownloadManager>,
+    download_manager: tauri::State<'_, DownloadManager>,
     instance_cfg: InstanceConfig,
     target: InstanceTarget,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -249,15 +255,19 @@ async fn handle_instance(
             // Etag
             // Last-Modified
 
+            // DMAN store to db
             // Download() starts
 
             // ---
             // received vec
 
             // loop vec
-            // workmanager job, need a state for it
+            // DMAN job, need a state for it
+            // DMAN needs a db_conn
             // load existing record via uuid, match if right for use else redo connection (InstanceTarget::new) or
             //
+
+            // loop isn't right we gotta do these in async as well
             for uuid in uuids {
                 // .get().send() (inside arm)
                 // let response = client.get(&url).send();
