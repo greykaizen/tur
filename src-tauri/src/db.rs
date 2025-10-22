@@ -3,6 +3,35 @@ use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+// help me out in some db methods like, we need some correction in some old methods and need to write a method or two. only write these methods not the whole db.rs file
+
+// 1) pub fn insert_download(
+//         &self,
+//         id: &Uuid,
+//         url: &str,
+//         filename: &str,
+//         destination: &str,
+//     )
+// - we need to fix this method to take in all necessary parameter for record insertion
+
+// 2)  pub fn update_headers(
+//         &self,
+//         id: &Uuid,
+//         size: Option<i64>,
+//         content_type: Option<&str>,
+//         etag: Option<&str>,
+//         last_modified: Option<&str>,
+//         accept_ranges: bool,
+//     )
+// - update_at updates as well on headers updates.
+
+// 3) pub fn get_resume_info(&self, ids: Vec<&Uuid>) {
+//         // return record related to that id except the following entries
+//         // !status, !accept_range, !updated_at
+//         // as in paramater we pass vec of uuid in return we need vec of records
+//     }
+// - we need to write this method as well
+
 // schema
 // CREATE TABLE IF NOT EXISTS downloads (
 //     id             BLOB PRIMARY KEY,           -- 16-byte UUIDv7
@@ -54,6 +83,11 @@ impl DownloadDb {
         })
     }
 
+    pub fn update_download(){}
+
+    // new loads them all at once
+    // deeplink decodes them all at once
+    // resume has twice emit delay
     pub fn insert_download(
         &self,
         id: &Uuid,
@@ -96,6 +130,12 @@ impl DownloadDb {
         Ok(())
     }
 
+    pub fn get_resume_info(&self, ids: Vec<&Uuid>) {
+        // return record related to that id except the following entries
+        // !status, !accept_range, !updated_at
+        // as in paramater we pass vec of uuid in return we need vec of records
+    }
+
     // mark completed via id
     pub fn mark_completed(&self, id: &Uuid) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -105,7 +145,6 @@ impl DownloadDb {
         )?;
         Ok(())
     }
-
 
     pub fn get_incomplete(&self) -> Result<Vec<(Uuid, String, i64)>> {
         let conn = self.conn.lock().unwrap();

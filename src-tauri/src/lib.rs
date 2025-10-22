@@ -33,9 +33,9 @@ pub fn run() {
         }))
         .setup(|app| {
             // Initialize WorkManager/DownloadManager here
-            let work_manager =
+            let download_manager =
                 DownloadManager::new(app.handle()).expect("Failed to initialize DownloadManager");
-            app.manage(work_manager);
+            app.manage(download_manager);
 
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
@@ -113,8 +113,6 @@ fn handle_deep_link(app: &tauri::AppHandle, url_str: &str) {
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum InstanceTarget {
-    /// --- new_instance
-    ///     url comes in only via new button
     new(Vec<String>),
     resume(Vec<Uuid>),
     deep_link(Vec<String>),
@@ -201,13 +199,15 @@ async fn handle_instance(
                 // generate ID
                 let id = Uuid::now_v7();
 
+                // store to db here
+
                 // emit full
                 let payload = json!({
                     "id": id,
                     "url": url, // might not be needed
                     "filename": filename,
                     "size": size,
-                    "resume": resume,
+                    "resume": resume, // TODO resume with 206
                     "etag": etag,
                     "last-modified": last_modified
                 });
@@ -240,7 +240,7 @@ async fn handle_instance(
 
             // check file existance on dest. location, if not there start from scratch via Download::new(id, size, num_conn)
 
-            // // prep asyn client
+            // prep asyn client
 
             // 1st .emit("queue_work") (as req. came we check dest. & metadata then emit and start client)
             // uuid
@@ -261,14 +261,15 @@ async fn handle_instance(
             // ---
             // received vec
 
-            // loop vec
-            // DMAN job, need a state for it
-            // DMAN needs a db_conn
-            // load existing record via uuid, match if right for use else redo connection (InstanceTarget::new) or
-            //
-
             // loop isn't right we gotta do these in async as well
+            // load existing record via uuid, match if right for use else redo connection (InstanceTarget::new)
             for uuid in uuids {
+                // using download_manager.db we get the whole record via get_resume_info(uuid)
+                // destination check for the file existance, if show window "download file missing" with restart again button
+                // etag, last-mod for check & match, if mismatch then drop old etag/last-mod and retrieve new headers, parse new info from it then update_download.
+
+                // 206 support from response
+
                 // .get().send() (inside arm)
                 // let response = client.get(&url).send();
 
