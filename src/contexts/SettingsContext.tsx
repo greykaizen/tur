@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { Store, getStore as getStoreInstance } from '@tauri-apps/plugin-store';
 import { appConfigDir } from '@tauri-apps/api/path';
 import { join } from '@tauri-apps/api/path';
-
 
 export type AppSettings = {
     app: {
@@ -11,6 +10,18 @@ export type AppSettings = {
         sidebar: 'left' | 'right';
         theme: 'light' | 'dark' | 'system';
         button_label: 'text' | 'icon' | 'both';
+        show_download_progress: boolean;
+        show_segment_progress: boolean;
+    };
+    shortcuts: {
+        goHome: string;
+        openSettings: string;
+        addDownload: string;
+        openDetails: string;
+        openHistory: string;
+        toggleSidebar: string;
+        cancelDownload: string;
+        quitApp: string;
     };
     download: {
         num_threads: number;
@@ -30,15 +41,25 @@ export type AppSettings = {
     showNotifications: boolean;
 };
 
-export type BackendSettings = Pick<AppSettings, 'download' | 'thread' | 'session'>;
-
 const DEFAULT_SETTINGS: AppSettings = {
     app: {
         show_tray_icon: true,
         quit_on_close: false,
         sidebar: 'left',
         theme: 'system',
-        button_label: 'both'
+        button_label: 'both',
+        show_download_progress: true,
+        show_segment_progress: true
+    },
+    shortcuts: {
+        goHome: 'Ctrl+K',
+        openSettings: 'Ctrl+P',
+        addDownload: 'Ctrl+N',
+        openDetails: 'Ctrl+D',
+        openHistory: 'Ctrl+H',
+        toggleSidebar: 'Ctrl+L',
+        cancelDownload: 'Ctrl+C',
+        quitApp: 'Ctrl+Q'
     },
     download: {
         num_threads: 8,
@@ -62,10 +83,8 @@ async function loadOrGetStore(): Promise<Store> {
     const dir = await appConfigDir();
     const storePath = await join(dir, 'config.json');
 
-    // Try using Tauri’s built-in smart cache:
     let store = await getStoreInstance(storePath);
     if (!store) {
-        // not loaded yet — load it now with defaults + autosave
         store = await Store.load(storePath, {
             defaults: { settings: DEFAULT_SETTINGS },
             autoSave: true,
@@ -75,7 +94,15 @@ async function loadOrGetStore(): Promise<Store> {
     return store;
 }
 
-export function useSettings() {
+interface SettingsContextType {
+    ready: boolean;
+    settings: AppSettings;
+    set: (path: string, value: any) => Promise<void>;
+}
+
+const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
+
+export function SettingsProvider({ children }: { children: ReactNode }) {
     const [ready, setReady] = useState(false);
     const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
@@ -83,23 +110,26 @@ export function useSettings() {
         (async () => {
             const store = await loadOrGetStore();
             const loaded = await store.get<AppSettings>('settings');
-            if (loaded) setSettings(loaded);
+            if (loaded) {
+                // Merge with defaults to ensure shortcuts exist
+                const merged = {
+                    ...DEFAULT_SETTINGS,
+                    ...loaded,
+                    shortcuts: {
+                        ...DEFAULT_SETTINGS.shortcuts,
+                        ...(loaded.shortcuts || {})
+                    }
+                };
+                setSettings(merged);
+                // Save merged settings back to store
+                await store.set('settings', merged);
+            }
             setReady(true);
         })();
     }, []);
 
-
-    const get = useCallback(
-        (path: string): any => {
-            return path.split('.').reduce((prev: any, key: string) => prev?.[key], settings);
-        },
-        [settings]
-    );
-
     const set = useCallback(async (path: string, value: any) => {
         const parts = path.split('.');
-        // const root = parts.shift() as keyof AppSettings;
-
         const updated = structuredClone(settings);
         let node = updated as any;
         parts.forEach((p, i) => {
@@ -112,18 +142,17 @@ export function useSettings() {
         setSettings(updated);
     }, [settings]);
 
-    const getBackendSettings = useCallback((): BackendSettings => ({
-        download: settings.download,
-        thread: settings.thread,
-        session: settings.session
-    }), [settings]);
+    return (
+        <SettingsContext.Provider value={{ ready, settings, set }}>
+            {children}
+        </SettingsContext.Provider>
+    );
+}
 
-    const submitWork = useCallback(async (work: string) => {
-        const { invoke } = await import('@tauri-apps/api/core'); // v2
-        await invoke('submit_work', {
-            payload: { work, settings: getBackendSettings() }
-        });
-    }, [getBackendSettings]);
-
-    return { ready, settings, get, set, getBackendSettings, submitWork };
+export function useSettings() {
+    const context = useContext(SettingsContext);
+    if (context === undefined) {
+        throw new Error('useSettings must be used within a SettingsProvider');
+    }
+    return context;
 }
