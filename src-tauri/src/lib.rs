@@ -33,9 +33,9 @@ pub fn run() {
         }))
         .setup(|app| {
             // Initialize WorkManager/DownloadManager here
-            let download_manager =
-                DownloadManager::new(app.handle()).expect("Failed to initialize DownloadManager");
-            app.manage(download_manager);
+            // let download_manager =
+            //     DownloadManager::new(app.handle()).expect("Failed to initialize DownloadManager");
+            // app.manage(download_manager);
 
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
