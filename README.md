@@ -1,16 +1,12 @@
-<link href="https://fonts.googleapis.com/css2?family=Modak&display=swap" rel="stylesheet">
-
 <div align="center">
-  <img src="/src-tauri/icons/icon.png" alt="tur logo" width="80" style="display: inline-block; vertical-align: middle;"> 
-  <span style="font-family: 'Modak', sans-serif; font-size: 3.5em; color: transparent; -webkit-text-stroke: 2px #000; text-stroke: 2px #000; display: inline-block; vertical-align: middle; margin-left: 15px; letter-spacing: 0.05em;">tur</span>
+  <img src="src-tauri/icons/icon.png" alt="tur" width="120">
+  
+  # tur
+  <p>A fast, modern download manager for desktop</p>
+  
+  ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+  ![Version](https://img.shields.io/badge/version-0.1.0-green.svg)
 </div>
-
-<p align="center">A fast, modern download manager for desktop</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/version-0.1.0-green.svg" alt="Version">
-</p>
 
 ---
 
