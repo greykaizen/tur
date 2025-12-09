@@ -118,3 +118,61 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Animated Floating Gradient Mesh */
+@keyframes float-1 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+    filter: hue-rotate(0deg);
+  }
+  33% {
+    transform: translate(30px, -50px) scale(1.1);
+    filter: hue-rotate(30deg);
+  }
+  66% {
+    transform: translate(-40px, 30px) scale(0.9);
+    filter: hue-rotate(-30deg);
+  }
+}
+
+@keyframes float-2 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+    filter: hue-rotate(0deg);
+  }
+  33% {
+    transform: translate(-50px, 40px) scale(1.15);
+    filter: hue-rotate(-40deg);
+  }
+  66% {
+    transform: translate(40px, -30px) scale(0.85);
+    filter: hue-rotate(40deg);
+  }
+}
+
+@keyframes float-3 {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+    filter: hue-rotate(0deg);
+  }
+  33% {
+    transform: translate(calc(-50% + 40px), calc(-50% - 40px)) scale(1.2);
+    filter: hue-rotate(50deg);
+  }
+  66% {
+    transform: translate(calc(-50% - 30px), calc(-50% + 50px)) scale(0.8);
+    filter: hue-rotate(-50deg);
+  }
+}
+
+.animate-float-1 {
+  animation: float-1 20s ease-in-out infinite;
+}
+
+.animate-float-2 {
+  animation: float-2 25s ease-in-out infinite;
+}
+
+.animate-float-3 {
+  animation: float-3 30s ease-in-out infinite;
+}

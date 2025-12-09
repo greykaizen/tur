@@ -11,9 +11,10 @@ interface HeaderProps {
   onToggleSidebar: () => void;
   showSidebarToggle?: boolean;
   onOpenAddDialog: () => void;
+  isEmptyState?: boolean;
 }
 
-export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle = true, onOpenAddDialog }: HeaderProps) {
+export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle = true, onOpenAddDialog, isEmptyState = false }: HeaderProps) {
   const navigate = useNavigate();
   const { setTheme } = useTheme();
   const { settings, ready } = useSettings();
@@ -50,32 +51,72 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
   const buttonLabel = ready ? settings.app.button_label : 'both';
 
   return (
-    <header className="bg-background/80 backdrop-blur-sm">
+    <header className={`relative z-50 ${isEmptyState ? 'bg-transparent' : 'bg-background/80 backdrop-blur-sm'}`}>
       <div className="flex items-center justify-between px-4 h-14">
-        {/* Left side: Sidebar toggle (if left), Logo, App name */}
-        <div className="flex items-center gap-3">
-          {showSidebarToggle && !sidebarOpen && sidebarPosition === 'left' && (
+        {/* Left side: Sidebar toggle (if left), Logo, App name - Hidden in empty state */}
+        {!isEmptyState && (
+          <div className="flex items-center gap-3">
+            {showSidebarToggle && !sidebarOpen && sidebarPosition === 'left' && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onToggleSidebar}
+                aria-label="Toggle sidebar"
+              >
+                <PanelLeft className="size-5" />
+              </Button>
+            )}
+            
+            <button
+              onClick={() => {
+                // Check if there are active downloads
+                const activeDownloads = sessionStorage.getItem('activeDownloads');
+                if (activeDownloads) {
+                  const downloads = JSON.parse(activeDownloads);
+                  if (downloads.length > 0) {
+                    // Navigate to download view with first download
+                    navigate('/', { state: { download: downloads[0] } });
+                  } else {
+                    // Navigate to empty state
+                    navigate('/', { replace: true });
+                  }
+                } else {
+                  // Navigate to empty state
+                  navigate('/', { replace: true });
+                }
+              }}
+              className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+            >
+              <img src="/icon.png" alt="tur logo" className="w-8 h-8" />
+              <span className="-mb-1.5 text-4xl tracking-tight" style={{ 
+      fontFamily: "'Modak', cursive",
+      WebkitTextStroke: '1.5px',
+      WebkitTextFillColor: 'transparent',
+      letterSpacing: '0.05em'
+    }}>tur</span>
+            </button>
+          </div>
+        )}
+
+        {/* Empty state - just a spacer */}
+        {isEmptyState && <div />}
+
+        {/* Right side: Donate, History, Menu (no Add button in empty state) */}
+        <div className="flex items-center gap-2">
+          {/* Donate Button - Only in empty state with microinteraction */}
+          {isEmptyState && (
             <Button
               variant="ghost"
-              size="icon"
-              onClick={onToggleSidebar}
-              aria-label="Toggle sidebar"
+              size="sm"
+              onClick={() => navigate('/donate')}
+              className="gap-2 group"
             >
-              <PanelLeft className="size-5" />
+              <Heart className="size-5 transition-all group-hover:scale-110 group-hover:fill-red-500 group-hover:text-red-500" />
+              Donate
             </Button>
           )}
-          
-          <button
-            onClick={() => navigate('/')}
-            className="flex items-center gap-3 hover:opacity-80 transition-opacity"
-          >
-            <img src="/icon.png" alt="tur logo" className="w-8 h-8" />
-            <span className="font-bold text-xl tracking-tight">tur</span>
-          </button>
-        </div>
 
-        {/* Right side: Add button, History button, Menu, Sidebar toggle (if right) */}
-        <div className="flex items-center gap-2">
+          {/* History Button */}
           {buttonLabel === 'text' ? (
             <Button
               variant="ghost"
@@ -105,30 +146,35 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
             </Button>
           )}
 
-          {buttonLabel === 'text' ? (
-            <Button
-              onClick={onOpenAddDialog}
-              className="rounded-full bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              Add
-            </Button>
-          ) : buttonLabel === 'icon' ? (
-            <Button
-              onClick={onOpenAddDialog}
-              className="rounded-full bg-blue-600 hover:bg-blue-700 text-white"
-              size="icon"
-              aria-label="Add"
-            >
-              <CirclePlus className="size-5" />
-            </Button>
-          ) : (
-            <Button
-              onClick={onOpenAddDialog}
-              className="rounded-full bg-blue-600 hover:bg-blue-700 text-white gap-2"
-            >
-              <CirclePlus className="size-5" />
-              Add
-            </Button>
+          {/* Add Button - Hidden in empty state */}
+          {!isEmptyState && (
+            <>
+              {buttonLabel === 'text' ? (
+                <Button
+                  onClick={onOpenAddDialog}
+                  className="rounded-full bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  Add
+                </Button>
+              ) : buttonLabel === 'icon' ? (
+                <Button
+                  onClick={onOpenAddDialog}
+                  className="rounded-full bg-blue-600 hover:bg-blue-700 text-white"
+                  size="icon"
+                  aria-label="Add"
+                >
+                  <CirclePlus className="size-5" />
+                </Button>
+              ) : (
+                <Button
+                  onClick={onOpenAddDialog}
+                  className="rounded-full bg-blue-600 hover:bg-blue-700 text-white gap-2"
+                >
+                  <CirclePlus className="size-5" />
+                  Add
+                </Button>
+              )}
+            </>
           )}
 
           <div className="relative" ref={menuRef}>
@@ -233,14 +279,26 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
                     </AnimatePresence>
                   </div>
 
-                  <button className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm">
+                  <button
+                    onClick={() => {
+                      navigate('/about');
+                      setMenuOpen(false);
+                    }}
+                    className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
+                  >
                     <Info className="mr-2 h-5 w-5" />
                     About
                   </button>
 
-                  <button className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm">
+                  <button
+                    onClick={() => {
+                      navigate('/donate');
+                      setMenuOpen(false);
+                    }}
+                    className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
+                  >
                     <Heart className="mr-2 h-5 w-5" />
-                    Donate us
+                    Donate
                   </button>
 
                   <div className="border-t border-border my-1"></div>

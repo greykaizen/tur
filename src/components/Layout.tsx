@@ -16,21 +16,25 @@ export default function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [isEmptyState, setIsEmptyState] = useState(false);
   
   const isDetailPage = location.pathname === '/detail';
   const sidebarPosition = ready ? settings.app.sidebar : 'left';
 
-  // Listen for keyboard shortcuts
+  // Listen for keyboard shortcuts and empty state
   useEffect(() => {
     const handleOpenAddDialog = () => setAddDialogOpen(true);
     const handleToggleSidebar = () => setSidebarOpen(prev => !prev);
+    const handleEmptyState = (e: CustomEvent) => setIsEmptyState(e.detail.isEmpty);
     
     window.addEventListener('open-add-dialog', handleOpenAddDialog);
     window.addEventListener('toggle-sidebar', handleToggleSidebar);
+    window.addEventListener('home-empty-state', handleEmptyState as EventListener);
     
     return () => {
       window.removeEventListener('open-add-dialog', handleOpenAddDialog);
       window.removeEventListener('toggle-sidebar', handleToggleSidebar);
+      window.removeEventListener('home-empty-state', handleEmptyState as EventListener);
     };
   }, []);
 
@@ -56,7 +60,38 @@ export default function Layout({ children }: LayoutProps) {
   };
 
   return (
-    <div className="h-screen w-screen flex overflow-hidden bg-background">
+    <div className="h-screen w-screen flex overflow-hidden bg-background relative">
+      {/* Animated Gradient Mesh Background - Only in Empty State */}
+      {isEmptyState && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div 
+            className="absolute w-[600px] h-[600px] rounded-full blur-3xl opacity-45 animate-float-1"
+            style={{
+              background: 'radial-gradient(circle, rgba(59, 130, 246, 0.4) 0%, transparent 70%)',
+              top: '10%',
+              left: '15%',
+            }}
+          />
+          <div 
+            className="absolute w-[650px] h-[650px] rounded-full blur-3xl opacity-40 animate-float-2"
+            style={{
+              background: 'radial-gradient(circle, rgba(168, 85, 247, 0.4) 0%, transparent 70%)',
+              bottom: '15%',
+              right: '20%',
+            }}
+          />
+          <div 
+            className="absolute w-[600px] h-[600px] rounded-full blur-3xl opacity-45 animate-float-3"
+            style={{
+              background: 'radial-gradient(circle, rgba(236, 72, 153, 0.3) 0%, transparent 70%)',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+            }}
+          />
+        </div>
+      )}
+
       {!isDetailPage && sidebarPosition === 'left' && (
         <Sidebar 
           open={sidebarOpen}
@@ -69,15 +104,18 @@ export default function Layout({ children }: LayoutProps) {
           position="left"
         />
       )}
-      <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300 ease-out">
+      <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300 ease-out relative z-10">
         <Header 
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen(true)}
           showSidebarToggle={!isDetailPage}
           onOpenAddDialog={() => setAddDialogOpen(true)}
+          isEmptyState={isEmptyState}
         />
         <div className="flex-1 overflow-hidden p-3 pt-2">
-          <div className="h-full w-full bg-card border border-border rounded-2xl shadow-sm overflow-hidden transition-all duration-200">
+          <div className={`h-full w-full rounded-2xl shadow-sm overflow-hidden transition-all duration-200 ${
+            isEmptyState ? 'bg-transparent border-0' : 'bg-card border border-border'
+          }`}>
             {children}
           </div>
         </div>

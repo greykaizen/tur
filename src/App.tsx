@@ -1,13 +1,15 @@
 import { ThemeProvider } from "@/components/theme-provider"
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { SettingsProvider, useSettings } from '@/contexts/SettingsContext';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Settings from '@/pages/Settings';
 import History from '@/pages/History';
 import Detail from '@/pages/Detail';
+import About from '@/pages/About';
+import Donate from '@/pages/Donate';
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -19,6 +21,8 @@ function AnimatedRoutes() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/history" element={<History />} />
         <Route path="/detail" element={<Detail />} />
+        <Route path="/about" element={<About />} />
+        <Route path="/donate" element={<Donate />} />
       </Routes>
     </AnimatePresence>
   );
@@ -27,6 +31,17 @@ function AnimatedRoutes() {
 function AppContent() {
   const navigate = useNavigate();
   const { settings, ready } = useSettings();
+  const [isHomeEmptyState, setIsHomeEmptyState] = useState(false);
+
+  // Listen for home empty state changes
+  useEffect(() => {
+    const handleHomeEmptyState = (e: CustomEvent) => {
+      setIsHomeEmptyState(e.detail.isEmpty);
+    };
+
+    window.addEventListener('home-empty-state', handleHomeEmptyState as EventListener);
+    return () => window.removeEventListener('home-empty-state', handleHomeEmptyState as EventListener);
+  }, []);
 
   useEffect(() => {
     if (!ready) return;
@@ -78,8 +93,11 @@ function AppContent() {
         e.preventDefault();
         navigate('/history');
       } else if (matchesShortcut(toggleSidebar)) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent('toggle-sidebar'));
+        // Don't toggle sidebar when in home empty state
+        if (!isHomeEmptyState) {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent('toggle-sidebar'));
+        }
       } else if (matchesShortcut(cancelDownload)) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('cancel-download'));
@@ -92,7 +110,7 @@ function AppContent() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, settings, ready]);
+  }, [navigate, settings, ready, isHomeEmptyState]);
 
   return (
     <Layout>
