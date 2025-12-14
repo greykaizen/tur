@@ -3,6 +3,19 @@ use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct ResumeInfo {
+    pub id: Uuid,
+    pub url: String,
+    pub filename: String,
+    pub size: Option<i64>,
+    pub bytes_received: i64,
+    pub content_type: Option<String>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub destination: String,
+}
+
 // help me out in some db methods like, we need some correction in some old methods and need to write a method or two. only write these methods not the whole db.rs file
 
 // 1) pub fn insert_download(
@@ -94,12 +107,27 @@ impl DownloadDb {
         url: &str,
         filename: &str,
         destination: &str,
+        size: Option<i64>,
+        content_type: Option<&str>,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+        accept_ranges: bool,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO downloads (id, url, filename, destination, updated_at) 
-             VALUES (?1, ?2, ?3, ?4, unixepoch())",
-            params![id.as_bytes(), url, filename, destination],
+            "INSERT INTO downloads (id, url, filename, destination, size, content_type, etag, last_modified, accept_ranges, updated_at) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch())",
+            params![
+                id.as_bytes(), 
+                url, 
+                filename, 
+                destination,
+                size,
+                content_type,
+                etag,
+                last_modified,
+                accept_ranges as i32
+            ],
         )?;
         Ok(())
     }
@@ -130,10 +158,44 @@ impl DownloadDb {
         Ok(())
     }
 
-    pub fn get_resume_info(&self, ids: Vec<&Uuid>) {
-        // return record related to that id except the following entries
-        // !status, !accept_range, !updated_at
-        // as in paramater we pass vec of uuid in return we need vec of records
+    pub fn get_resume_info(&self, ids: Vec<&Uuid>) -> Result<Vec<ResumeInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut results = Vec::new();
+        
+        for id in ids {
+            let mut stmt = conn.prepare(
+                "SELECT id, url, filename, size, bytes_received, content_type, etag, last_modified, destination 
+                 FROM downloads WHERE id = ?1"
+            )?;
+            
+            let resume_info = stmt.query_row(params![id.as_bytes()], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let uuid = Uuid::from_slice(&id_bytes).unwrap();
+                
+                Ok(ResumeInfo {
+                    id: uuid,
+                    url: row.get(1)?,
+                    filename: row.get(2)?,
+                    size: row.get(3)?,
+                    bytes_received: row.get(4)?,
+                    content_type: row.get(5)?,
+                    etag: row.get(6)?,
+                    last_modified: row.get(7)?,
+                    destination: row.get(8)?,
+                })
+            });
+            
+            match resume_info {
+                Ok(info) => results.push(info),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    // Skip missing records
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
+        Ok(results)
     }
 
     // mark completed via id
