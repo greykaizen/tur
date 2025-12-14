@@ -5,7 +5,7 @@ use tokio::task::JoinSet;
 #[cfg(unix)]
 use tokio::signal::{self, unix::SignalKind};
 
-use crate::db::DownloadDb;
+use crate::database::Database;
 enum _ControlCommand {
     Resume,
     Pause,
@@ -15,7 +15,7 @@ enum _ControlCommand {
 
 //  TODO tauri store read to memory and push new changes design
 pub struct DownloadManager {
-    db: DownloadDb,
+    db: Database,
     instances: Mutex<JoinSet<()>>, // uuid ain't needed if joinset auto drop on finish
 }
 
@@ -23,7 +23,7 @@ impl DownloadManager {
     pub fn new(app_handle: &tauri::AppHandle) -> anyhow::Result<Self> {
         let db_path = app_handle.path().app_data_dir()?.join("tur.db");
         Ok(Self {
-            db: DownloadDb::new(&db_path)?,
+            db: Database::new(&db_path)?,
             instances: Mutex::new(JoinSet::new()),
         })
     }
