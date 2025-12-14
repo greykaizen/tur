@@ -1,7 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { Store, getStore as getStoreInstance } from '@tauri-apps/plugin-store';
-import { appConfigDir } from '@tauri-apps/api/path';
-import { join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
 
 export type AppSettings = {
     app: {
@@ -12,18 +10,20 @@ export type AppSettings = {
         button_label: 'text' | 'icon' | 'both';
         show_download_progress: boolean;
         show_segment_progress: boolean;
+        autostart: boolean;
     };
     shortcuts: {
-        goHome: string;
-        openSettings: string;
-        addDownload: string;
-        openDetails: string;
-        openHistory: string;
-        toggleSidebar: string;
-        cancelDownload: string;
-        quitApp: string;
+        go_home: string;
+        open_settings: string;
+        add_download: string;
+        open_details: string;
+        open_history: string;
+        toggle_sidebar: string;
+        cancel_download: string;
+        quit_app: string;
     };
     download: {
+        download_location: string;
         num_threads: number;
         chunk_size: number;
         socket_buffer_size: number;
@@ -37,8 +37,8 @@ export type AppSettings = {
         history: boolean;
         metadata: boolean;
     };
-    sendAnonymousMetrics: boolean;
-    showNotifications: boolean;
+    send_anonymous_metrics: boolean;
+    show_notifications: boolean;
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -49,97 +49,120 @@ const DEFAULT_SETTINGS: AppSettings = {
         theme: 'system',
         button_label: 'both',
         show_download_progress: true,
-        show_segment_progress: true
+        show_segment_progress: true,
+        autostart: false,
     },
     shortcuts: {
-        goHome: 'Ctrl+K',
-        openSettings: 'Ctrl+P',
-        addDownload: 'Ctrl+N',
-        openDetails: 'Ctrl+D',
-        openHistory: 'Ctrl+H',
-        toggleSidebar: 'Ctrl+L',
-        cancelDownload: 'Ctrl+C',
-        quitApp: 'Ctrl+Q'
+        go_home: 'Ctrl+K',
+        open_settings: 'Ctrl+P',
+        add_download: 'Ctrl+N',
+        open_details: 'Ctrl+D',
+        open_history: 'Ctrl+H',
+        toggle_sidebar: 'Ctrl+L',
+        cancel_download: 'Ctrl+C',
+        quit_app: 'Ctrl+Q',
     },
     download: {
+        download_location: '',
         num_threads: 8,
         chunk_size: 16,
         socket_buffer_size: 0,
-        speed_limit: 0
+        speed_limit: 0,
     },
     thread: {
         total_connections: 1,
-        per_task_connections: 1
+        per_task_connections: 1,
     },
     session: {
         history: false,
-        metadata: false
+        metadata: false,
     },
-    sendAnonymousMetrics: false,
-    showNotifications: true
+    send_anonymous_metrics: false,
+    show_notifications: true,
 };
 
-async function loadOrGetStore(): Promise<Store> {
-    const dir = await appConfigDir();
-    const storePath = await join(dir, 'config.json');
+const UI_CACHE_KEY = 'tur_ui_settings';
 
-    let store = await getStoreInstance(storePath);
-    if (!store) {
-        store = await Store.load(storePath, {
-            defaults: { settings: DEFAULT_SETTINGS },
-            autoSave: true,
-            overrideDefaults: false 
-        });
+function getCachedUISettings(): Partial<AppSettings['app']> | null {
+    try {
+        const cached = localStorage.getItem(UI_CACHE_KEY);
+        return cached ? JSON.parse(cached) : null;
+    } catch {
+        return null;
     }
-    return store;
+}
+
+function cacheUISettings(app: AppSettings['app']) {
+    try {
+        localStorage.setItem(UI_CACHE_KEY, JSON.stringify({
+            theme: app.theme,
+            sidebar: app.sidebar,
+        }));
+    } catch {
+        // localStorage not available
+    }
 }
 
 interface SettingsContextType {
     ready: boolean;
     settings: AppSettings;
-    set: (path: string, value: any) => Promise<void>;
+    set: (path: string, value: unknown) => Promise<void>;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
+    const cachedUI = getCachedUISettings();
+    const initialSettings: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        app: {
+            ...DEFAULT_SETTINGS.app,
+            ...(cachedUI || {}),
+        },
+    };
+
     const [ready, setReady] = useState(false);
-    const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+    const [settings, setSettings] = useState<AppSettings>(initialSettings);
 
     useEffect(() => {
         (async () => {
-            const store = await loadOrGetStore();
-            const loaded = await store.get<AppSettings>('settings');
-            if (loaded) {
-                // Merge with defaults to ensure shortcuts exist
-                const merged = {
-                    ...DEFAULT_SETTINGS,
-                    ...loaded,
-                    shortcuts: {
-                        ...DEFAULT_SETTINGS.shortcuts,
-                        ...(loaded.shortcuts || {})
-                    }
-                };
-                setSettings(merged);
-                // Save merged settings back to store
-                await store.set('settings', merged);
+            try {
+                const loaded = await invoke<AppSettings>('get_settings');
+                setSettings(loaded);
+                cacheUISettings(loaded.app);
+            } catch (err) {
+                console.error('Failed to load settings:', err);
             }
             setReady(true);
         })();
     }, []);
 
-    const set = useCallback(async (path: string, value: any) => {
-        const parts = path.split('.');
-        const updated = structuredClone(settings);
-        let node = updated as any;
-        parts.forEach((p, i) => {
-            if (i === parts.length - 1) node[p] = value;
-            else node = node[p];
-        });
-
-        const store = await loadOrGetStore();
-        await store.set('settings', updated);
-        setSettings(updated);
+    const set = useCallback(async (path: string, value: unknown) => {
+        try {
+            await invoke('update_setting', { key: path, value });
+            
+            const parts = path.split('.');
+            const updated = structuredClone(settings);
+            let node = updated as Record<string, unknown>;
+            
+            for (let i = 0; i < parts.length - 1; i++) {
+                node = node[parts[i]] as Record<string, unknown>;
+            }
+            node[parts[parts.length - 1]] = value;
+            
+            setSettings(updated);
+            
+            if (path.startsWith('app.')) {
+                cacheUISettings(updated.app);
+            }
+            
+            if (path === 'app.autostart') {
+                await invoke('set_autostart', { enabled: value });
+            }
+        } catch (err) {
+            console.error('Failed to update setting:', err);
+            throw err;
+        }
     }, [settings]);
 
     return (

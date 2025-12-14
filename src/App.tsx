@@ -58,14 +58,14 @@ function AppContent() {
     };
 
     const handleKeyDown = async (e: KeyboardEvent) => {
-      const goHome = parseShortcut(settings.shortcuts.goHome);
-      const openSettings = parseShortcut(settings.shortcuts.openSettings);
-      const addDownload = parseShortcut(settings.shortcuts.addDownload);
-      const openDetails = parseShortcut(settings.shortcuts.openDetails);
-      const openHistory = parseShortcut(settings.shortcuts.openHistory);
-      const toggleSidebar = parseShortcut(settings.shortcuts.toggleSidebar);
-      const cancelDownload = parseShortcut(settings.shortcuts.cancelDownload);
-      const quitApp = parseShortcut(settings.shortcuts.quitApp);
+      const goHome = parseShortcut(settings.shortcuts.go_home);
+      const openSettings = parseShortcut(settings.shortcuts.open_settings);
+      const addDownload = parseShortcut(settings.shortcuts.add_download);
+      const openDetails = parseShortcut(settings.shortcuts.open_details);
+      const openHistory = parseShortcut(settings.shortcuts.open_history);
+      const toggleSidebar = parseShortcut(settings.shortcuts.toggle_sidebar);
+      const cancelDownload = parseShortcut(settings.shortcuts.cancel_download);
+      const quitApp = parseShortcut(settings.shortcuts.quit_app);
 
       const matchesShortcut = (shortcut: ReturnType<typeof parseShortcut>) => {
         return (

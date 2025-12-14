@@ -35,7 +35,7 @@ export default function Settings() {
       }
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
+    const handleKeyUp = (_e: KeyboardEvent) => {
       if (recordedKeys.length > 0) {
         const shortcut = recordedKeys.join('+');
         set(`shortcuts.${editingShortcut}`, shortcut);
@@ -54,14 +54,14 @@ export default function Settings() {
   }, [editingShortcut, recordedKeys, set]);
 
   const resetShortcuts = () => {
-    set('shortcuts.goHome', 'Ctrl+K');
-    set('shortcuts.openSettings', 'Ctrl+P');
-    set('shortcuts.addDownload', 'Ctrl+N');
-    set('shortcuts.openDetails', 'Ctrl+D');
-    set('shortcuts.openHistory', 'Ctrl+H');
-    set('shortcuts.toggleSidebar', 'Ctrl+L');
-    set('shortcuts.cancelDownload', 'Ctrl+C');
-    set('shortcuts.quitApp', 'Ctrl+Q');
+    set('shortcuts.go_home', 'Ctrl+K');
+    set('shortcuts.open_settings', 'Ctrl+P');
+    set('shortcuts.add_download', 'Ctrl+N');
+    set('shortcuts.open_details', 'Ctrl+D');
+    set('shortcuts.open_history', 'Ctrl+H');
+    set('shortcuts.toggle_sidebar', 'Ctrl+L');
+    set('shortcuts.cancel_download', 'Ctrl+C');
+    set('shortcuts.quit_app', 'Ctrl+Q');
   };
 
   if (!ready) {
@@ -245,13 +245,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Navigate to home page</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('goHome')}
+                      onClick={() => setEditingShortcut('go_home')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'goHome' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'go_home' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'goHome' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'goHome' ? 'Press keys...' : settings.shortcuts.goHome}
+                        {editingShortcut === 'go_home' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'go_home' ? 'Press keys...' : settings.shortcuts.go_home}
                       </code>
                     </button>
                   </div>
@@ -261,13 +261,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Open settings page</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('openSettings')}
+                      onClick={() => setEditingShortcut('open_settings')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'openSettings' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'open_settings' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'openSettings' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'openSettings' ? 'Press keys...' : settings.shortcuts.openSettings}
+                        {editingShortcut === 'open_settings' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_settings' ? 'Press keys...' : settings.shortcuts.open_settings}
                       </code>
                     </button>
                   </div>
@@ -277,13 +277,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Open add download dialog</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('addDownload')}
+                      onClick={() => setEditingShortcut('add_download')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'addDownload' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'add_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'addDownload' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'addDownload' ? 'Press keys...' : settings.shortcuts.addDownload}
+                        {editingShortcut === 'add_download' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'add_download' ? 'Press keys...' : settings.shortcuts.add_download}
                       </code>
                     </button>
                   </div>
@@ -293,13 +293,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Navigate to details page</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('openDetails')}
+                      onClick={() => setEditingShortcut('open_details')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'openDetails' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'open_details' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'openDetails' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'openDetails' ? 'Press keys...' : settings.shortcuts.openDetails}
+                        {editingShortcut === 'open_details' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_details' ? 'Press keys...' : settings.shortcuts.open_details}
                       </code>
                     </button>
                   </div>
@@ -309,13 +309,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Navigate to history page</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('openHistory')}
+                      onClick={() => setEditingShortcut('open_history')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'openHistory' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'open_history' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'openHistory' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'openHistory' ? 'Press keys...' : settings.shortcuts.openHistory}
+                        {editingShortcut === 'open_history' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_history' ? 'Press keys...' : settings.shortcuts.open_history}
                       </code>
                     </button>
                   </div>
@@ -325,13 +325,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Open/close sidebar</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('toggleSidebar')}
+                      onClick={() => setEditingShortcut('toggle_sidebar')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'toggleSidebar' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'toggle_sidebar' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'toggleSidebar' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'toggleSidebar' ? 'Press keys...' : settings.shortcuts.toggleSidebar}
+                        {editingShortcut === 'toggle_sidebar' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'toggle_sidebar' ? 'Press keys...' : settings.shortcuts.toggle_sidebar}
                       </code>
                     </button>
                   </div>
@@ -341,13 +341,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Cancel current download</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('cancelDownload')}
+                      onClick={() => setEditingShortcut('cancel_download')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'cancelDownload' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'cancel_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'cancelDownload' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'cancelDownload' ? 'Press keys...' : settings.shortcuts.cancelDownload}
+                        {editingShortcut === 'cancel_download' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'cancel_download' ? 'Press keys...' : settings.shortcuts.cancel_download}
                       </code>
                     </button>
                   </div>
@@ -357,13 +357,13 @@ export default function Settings() {
                       <p className="text-sm text-muted-foreground">Quit the application</p>
                     </div>
                     <button
-                      onClick={() => setEditingShortcut('quitApp')}
+                      onClick={() => setEditingShortcut('quit_app')}
                       className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'quitApp' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        editingShortcut === 'quit_app' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
                       }`}
                     >
                       <code className="text-sm font-mono">
-                        {editingShortcut === 'quitApp' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'quitApp' ? 'Press keys...' : settings.shortcuts.quitApp}
+                        {editingShortcut === 'quit_app' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'quit_app' ? 'Press keys...' : settings.shortcuts.quit_app}
                       </code>
                     </button>
                   </div>
@@ -382,8 +382,8 @@ export default function Settings() {
                       </p>
                     </div>
                     <Switch
-                      checked={settings.showNotifications}
-                      onCheckedChange={(checked) => set('showNotifications', checked)}
+                      checked={settings.show_notifications}
+                      onCheckedChange={(checked) => set('show_notifications', checked)}
                     />
                   </div>
                 </div>
@@ -425,8 +425,8 @@ export default function Settings() {
                       </p>
                     </div>
                     <Switch
-                      checked={settings.sendAnonymousMetrics}
-                      onCheckedChange={(checked) => set('sendAnonymousMetrics', checked)}
+                      checked={settings.send_anonymous_metrics}
+                      onCheckedChange={(checked) => set('send_anonymous_metrics', checked)}
                     />
                   </div>
                 </div>

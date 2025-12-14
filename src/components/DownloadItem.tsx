@@ -13,11 +13,11 @@ interface DownloadItemProps {
 
 export default function DownloadItem({
   url,
-  size,
-  downloaded,
-  speed,
-  timeLeft,
-  resume,
+  size: _size,
+  downloaded: _downloaded,
+  speed: _speed,
+  timeLeft: _timeLeft,
+  resume: _resume,
   progress,
   segments = []
 }: DownloadItemProps) {
