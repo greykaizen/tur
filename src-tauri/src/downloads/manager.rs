@@ -15,7 +15,7 @@ enum _ControlCommand {
 
 //  TODO tauri store read to memory and push new changes design
 pub struct DownloadManager {
-    db: Database,
+    db: Database, // if it's needed or not, check with our db implementation
     instances: Mutex<JoinSet<()>>, // uuid ain't needed if joinset auto drop on finish
 }
 

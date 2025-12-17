@@ -18,7 +18,7 @@ use crate::settings;
 #[serde(tag = "type", content = "data")]
 pub enum DownloadRequest {
     /// New downloads from external sources (browser extension, manual add, drag & drop)
-    External(Vec<Url>),
+    New(Vec<Url>),
     /// Resume existing downloads from history
     Resume(Vec<Uuid>),
     /// Deep link URLs (cold start, app fetches headers)
@@ -150,7 +150,7 @@ pub async fn handle_download_request(
     };
 
     match request {
-        DownloadRequest::External(urls) => {
+        DownloadRequest::New(urls) => {
             // Get database instance
             let db = database::Database::initialize(&app).map_err(|e| e.to_string())?;
             

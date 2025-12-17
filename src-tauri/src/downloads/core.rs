@@ -99,8 +99,8 @@ impl<Context> Decode<Context> for Index {
 
 #[derive(Encode, Decode)]
 struct Coordinator {
-    range_byte: Range<u8>,
-    // steal_ptr: u8,  // runs in it's task so it create that on runtime
+    range_byte: Range<u8>, // start moves ahead and we know when to stop
+    // steal_ptr: u8, 
 }
 impl Coordinator {
     fn new(max_index: u8) -> Self {
@@ -115,7 +115,6 @@ impl Coordinator {
         } else if self.range_byte.start == self.range_byte.end {
             // TODO for the case of index 364..609 but if we need till 512 or something that's less than index value than select total size helps decide
         }
-
         0..0
     }
 }
@@ -160,6 +159,23 @@ impl Download {
             coordinator: Coordinator::new(Self::get_index(size >> 23).unwrap()),
         }
     }
+    // pass value as (value/2^20/8) or simply (value >> 23)
+    pub fn get_index(v: usize) -> Option<u8> {
+        let mut lo = if v <= RANGE[13].start { 0 } else { 13 };
+        let mut hi = if v <= RANGE[13].start { 12 } else { 59 };
+
+        while lo < hi {
+            let mid = (lo + hi) >> 1;
+            if RANGE[mid].start < v {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        (lo < RANGE.len()).then_some(lo as u8)
+    }
+
     /// frontend req. from History to start instance
     /// Load self from the given UUID, used when started from History
     /// let mut a = A::load(&handle, uuid).unwrap();
@@ -203,23 +219,6 @@ impl Download {
         bincode::encode_into_std_write(self, &mut file, config::standard()).map(|_| ())
     }
 
-    // pass value as (value/2^20/8) or simply (value >> 23)
-    pub fn get_index(v: usize) -> Option<u8> {
-        let mut lo = if v <= RANGE[13].start { 0 } else { 13 };
-        let mut hi = if v <= RANGE[13].start { 12 } else { 59 };
-
-        while lo < hi {
-            let mid = (lo + hi) >> 1;
-            if RANGE[mid].start < v {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-
-        (lo < RANGE.len()).then_some(lo as u8)
-    }
-
     pub async fn work(){
         let client = reqwest::Client::new();
         let res = client.get("https://example.com").send();
@@ -258,12 +257,3 @@ impl Download {
     }
     // db conn is on DM, it save the necessary info, DState goes to file-dl.tur
 }
-
-// destructor for cleanup and store state
-// impl Drop for Download {
-//     fn drop(&mut self) {
-//         if let Err(e) = self.save() {
-//             eprintln!("download metadata save failed: {}", e);
-//         }
-//     }
-// }
