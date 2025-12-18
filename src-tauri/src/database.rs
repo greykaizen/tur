@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use std::sync::Mutex;
-use uuid::Uuid;
 use tauri::Manager;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Download {
@@ -97,17 +97,20 @@ impl Database {
     }
 
     /// Initialize database with proper app data directory path
-    pub fn initialize(app_handle: &tauri::AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
-        let app_data_dir = app_handle.path().app_data_dir()
+    pub fn initialize<R: tauri::Runtime>(
+        app_handle: &tauri::AppHandle<R>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let app_data_dir = app_handle
+            .path()
+            .app_data_dir()
             .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-        
+
         // Ensure directory exists
         std::fs::create_dir_all(&app_data_dir)
             .map_err(|e| format!("Failed to create app data directory: {}", e))?;
-        
+
         let db_path = app_data_dir.join("tur.db");
-        Self::new(&db_path)
-            .map_err(|e| format!("Failed to initialize database: {}", e).into())
+        Self::new(&db_path).map_err(|e| format!("Failed to initialize database: {}", e).into())
     }
 
     /// Check if database exists and create if it doesn't
@@ -181,13 +184,13 @@ impl Database {
     pub fn get_resume_info(&self, ids: Vec<&Uuid>) -> Result<Vec<Download>> {
         let conn = self.conn.lock().unwrap();
         let mut results = Vec::new();
-        
+
         for id in ids {
             if let Some(download) = self.get_download_by_id_internal(&conn, id)? {
                 results.push(download);
             }
         }
-        
+
         Ok(results)
     }
 
@@ -204,9 +207,8 @@ impl Database {
     /// Get all incomplete downloads (status is NULL)
     pub fn get_incomplete(&self) -> Result<Vec<(Uuid, String, i64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, url, bytes_received FROM downloads WHERE status IS NULL"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, url, bytes_received FROM downloads WHERE status IS NULL")?;
 
         let downloads = stmt.query_map([], |row| {
             let id_bytes: Vec<u8> = row.get(0)?;
@@ -223,12 +225,10 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
                     content_type, last_modified, destination, accept_ranges, updated_at
-             FROM downloads ORDER BY updated_at DESC"
+             FROM downloads ORDER BY updated_at DESC",
         )?;
 
-        let downloads = stmt.query_map([], |row| {
-            self.row_to_download(row)
-        })?;
+        let downloads = stmt.query_map([], |row| self.row_to_download(row))?;
 
         downloads.collect()
     }
@@ -236,7 +236,10 @@ impl Database {
     /// Delete a single download record
     pub fn delete_download(&self, id: &Uuid) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM downloads WHERE id = ?1", params![id.as_bytes()])?;
+        conn.execute(
+            "DELETE FROM downloads WHERE id = ?1",
+            params![id.as_bytes()],
+        )?;
         Ok(())
     }
 
@@ -254,16 +257,18 @@ impl Database {
     }
 
     /// Internal helper for getting download by ID (reusable with existing connection)
-    fn get_download_by_id_internal(&self, conn: &Connection, id: &Uuid) -> Result<Option<Download>> {
+    fn get_download_by_id_internal(
+        &self,
+        conn: &Connection,
+        id: &Uuid,
+    ) -> Result<Option<Download>> {
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
                     content_type, last_modified, destination, accept_ranges, updated_at
-             FROM downloads WHERE id = ?1"
+             FROM downloads WHERE id = ?1",
         )?;
 
-        let result = stmt.query_row(params![id.as_bytes()], |row| {
-            self.row_to_download(row)
-        });
+        let result = stmt.query_row(params![id.as_bytes()], |row| self.row_to_download(row));
 
         match result {
             Ok(record) => Ok(Some(record)),
@@ -285,28 +290,24 @@ impl Database {
     /// Get downloads filtered by status
     pub fn get_downloads_by_status(&self, status: Option<&str>) -> Result<Vec<Download>> {
         let conn = self.conn.lock().unwrap();
-        
+
         match status {
             Some(s) => {
                 let mut stmt = conn.prepare(
                     "SELECT id, filename, status, size, bytes_received, url, etag, 
                             content_type, last_modified, destination, accept_ranges, updated_at
-                     FROM downloads WHERE status = ?1 ORDER BY updated_at DESC"
+                     FROM downloads WHERE status = ?1 ORDER BY updated_at DESC",
                 )?;
-                let downloads = stmt.query_map([s], |row| {
-                    self.row_to_download(row)
-                })?;
+                let downloads = stmt.query_map([s], |row| self.row_to_download(row))?;
                 downloads.collect()
-            },
+            }
             None => {
                 let mut stmt = conn.prepare(
                     "SELECT id, filename, status, size, bytes_received, url, etag, 
                             content_type, last_modified, destination, accept_ranges, updated_at
-                     FROM downloads WHERE status IS NULL ORDER BY updated_at DESC"
+                     FROM downloads WHERE status IS NULL ORDER BY updated_at DESC",
                 )?;
-                let downloads = stmt.query_map([], |row| {
-                    self.row_to_download(row)
-                })?;
+                let downloads = stmt.query_map([], |row| self.row_to_download(row))?;
                 downloads.collect()
             }
         }
@@ -326,7 +327,7 @@ impl Database {
     fn row_to_download(&self, row: &rusqlite::Row) -> rusqlite::Result<Download> {
         let id_bytes: Vec<u8> = row.get(0)?;
         let uuid = Uuid::from_slice(&id_bytes).unwrap();
-        
+
         Ok(Download {
             id: uuid,
             filename: row.get(1)?,
@@ -351,7 +352,7 @@ pub fn extract_timestamp_from_uuid_v7(id: &Uuid) -> Option<i64> {
     if bytes.len() >= 6 {
         let timestamp_ms = u64::from_be_bytes([
             0, 0, // pad with zeros
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
         ]);
         Some(timestamp_ms as i64 / 1000) // convert to seconds
     } else {
