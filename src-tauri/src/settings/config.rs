@@ -7,6 +7,7 @@ pub struct AppSettings {
     pub download: DownloadConfig,
     pub thread: ThreadConfig,
     pub session: SessionConfig,
+    pub network: NetworkConfig,
     pub send_anonymous_metrics: bool,
     pub show_notifications: bool,
 }
@@ -56,6 +57,44 @@ pub struct SessionConfig {
     pub metadata: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// User agent preset: "chrome", "firefox", "edge", "tur", "custom"
+    pub user_agent: String,
+    /// Custom user agent string (used when user_agent == "custom")
+    pub custom_user_agent: String,
+    /// Connection timeout in seconds
+    pub connect_timeout_secs: u16,
+    /// Read timeout in seconds (per chunk)
+    pub read_timeout_secs: u16,
+    /// Number of retry attempts on failure
+    pub retry_count: u8,
+    /// Delay between retries in milliseconds
+    pub retry_delay_ms: u32,
+    /// Allow invalid/self-signed SSL certificates
+    pub allow_insecure: bool,
+    /// Proxy configuration
+    pub proxy: ProxyConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    /// Enable proxy
+    pub enabled: bool,
+    /// Proxy type: "http", "https", "socks5"
+    pub proxy_type: String,
+    /// Proxy host
+    pub host: String,
+    /// Proxy port
+    pub port: u16,
+    /// Enable proxy authentication
+    pub auth_enabled: bool,
+    /// Proxy username
+    pub username: String,
+    /// Proxy password (stored in plain text for now)
+    pub password: String,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -64,6 +103,7 @@ impl Default for AppSettings {
             download: DownloadConfig::default(),
             thread: ThreadConfig::default(),
             session: SessionConfig::default(),
+            network: NetworkConfig::default(),
             send_anonymous_metrics: false,
             show_notifications: true,
         }
@@ -126,6 +166,35 @@ impl Default for SessionConfig {
         Self {
             history: false,
             metadata: false,
+        }
+    }
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            user_agent: "chrome".into(),
+            custom_user_agent: String::new(),
+            connect_timeout_secs: 15,
+            read_timeout_secs: 30,
+            retry_count: 3,
+            retry_delay_ms: 1000,
+            allow_insecure: false,
+            proxy: ProxyConfig::default(),
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_type: "http".into(),
+            host: String::new(),
+            port: 8080,
+            auth_enabled: false,
+            username: String::new(),
+            password: String::new(),
         }
     }
 }
