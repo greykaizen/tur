@@ -1,6 +1,6 @@
 [package]
 name = "tur"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["greykaizen"]
 description = "A download manager built smarter and more reliable. Reimagined from the ground up."
@@ -8,12 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/greykaizen/tur.git"
 readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tur_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -23,23 +18,19 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-store = "2"
-tauri-plugin-deep-link = "2.0"
+tauri-plugin-deep-link = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = { version = "2", features = ["derive", "serde"] }
+reqwest = { version = "0.12", features = ["stream", "socks"] }
+url = "2"
+tokio = { version = "1", features = ["signal", "macros"] }
+futures-util = "0.3"
+rusqlite = "0.32"
+uuid = { version = "1", features = ["v7", "serde"] }
+anyhow = "1"
+dirs = "5"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
-dirs = "5.0"
-# tauri-plugin-opener = "2"
-# tauri-plugin-sql = { version = "2.3.0", features = ["sqlite"] }
-# tauri-plugin-sql = { version = "2.3.0", features = ["sqlite"] }
-# tauri-plugin-store = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
-rusqlite = "0.37.0"
-serde_json = "1"
-anyhow = "1.0.99"
-time = "0.3.41"
-reqwest = "0.12.23"
-url = "2.5.7"
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1.47.1", features = ["signal", "macros"] }
-uuid = { version = "1.18.0", features = ["v7", "serde"] }
-bincode = { version = "2.0.1", features = ["derive", "serde"]  }
-
