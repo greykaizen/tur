@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::task::JoinHandle;
@@ -80,6 +80,15 @@ impl DownloadManager {
         urls: Vec<Url>,
     ) -> Result<(), String> {
         for url in urls {
+            // Check max_concurrent limit (0 = unlimited)
+            let max_concurrent = settings.download.max_concurrent;
+            if max_concurrent > 0 && self.active_count() >= max_concurrent as usize {
+                return Err(format!(
+                    "Max concurrent downloads ({}) reached",
+                    max_concurrent
+                ));
+            }
+
             let url_str = url.as_str();
 
             // Fetch headers
@@ -98,10 +107,14 @@ impl DownloadManager {
             let resume_supported = headers::supports_resume(hdrs);
 
             let id = Uuid::now_v7();
-            let downloads_dir = app
-                .path()
-                .download_dir()
-                .map_err(|e| format!("Failed to get downloads directory: {}", e))?;
+            // Use configured download location, fallback to system downloads dir
+            let downloads_dir = if settings.download.download_location.is_empty() {
+                app.path()
+                    .download_dir()
+                    .map_err(|e| format!("Failed to get downloads directory: {}", e))?
+            } else {
+                PathBuf::from(&settings.download.download_location)
+            };
             let destination = downloads_dir.join(&filename).to_string_lossy().to_string();
 
             // Store to database
