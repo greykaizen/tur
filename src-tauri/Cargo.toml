@@ -42,4 +42,6 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.47.1", features = ["signal", "macros"] }
 uuid = { version = "1.18.0", features = ["v7", "serde"] }
 bincode = { version = "2.0.1", features = ["derive", "serde"]  }
+indicatif = "0.17"
+console = "0.15"
 
