@@ -6,6 +6,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 // use crate::download_manager::DownloadManager;
 pub mod args;
+pub mod cli;
 pub mod database;
 pub mod downloads;
 pub mod settings;

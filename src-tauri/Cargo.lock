@@ -4716,6 +4716,7 @@ dependencies = [
  "bincode",
  "console",
  "dirs 5.0.1",
+ "futures-util",
  "indicatif",
  "reqwest",
  "rusqlite",

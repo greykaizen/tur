@@ -3,6 +3,7 @@
 //! Default: Terminal mode with progress bars
 //! Use --gui to open graphical interface
 
+use console::Style;
 use std::env;
 use std::path::PathBuf;
 
@@ -154,39 +155,97 @@ impl AppArgs {
         self.limit.as_ref().map(|s| parse_size(s))
     }
 
-    /// Print help message with emojis
+    /// Print help message with colors
     pub fn print_help() {
-        let help = r#"
-🚀 tur - A fast, modern download manager
+        let blue = Style::new().blue().bold();
+        let cyan = Style::new().cyan();
+        let green = Style::new().green();
+        let yellow = Style::new().yellow();
 
-USAGE:
-    tur [OPTIONS] [URLS...]
-
-MODE:
-    (default)           Terminal mode with progress bars
-    -g, --gui           Open graphical interface
-    -q, --quiet         Silent mode (exit code only)
-    -i, --interactive   Force interactive TUI (default in terminal)
-
-OPTIONS:
-    -f, --file <PATH>       Read URLs from file (one per line)
-    -o, --output <DIR>      Download to specific directory
-    -c, --connections <N>   Connections per download (1-64)
-    -l, --limit <SPEED>     Speed limit (e.g., 1M, 500K, 2G)
-    -m, --minimized         Start GUI minimized to tray
-    -d, --debug             Enable debug logging
-    -h, --help              Print this help message
-    -V, --version           Print version information
-
-EXAMPLES:
-    tur https://example.com/file.zip          📥 Download in terminal
-    tur -o ~/Downloads file1.zip file2.zip    📁 Download to directory
-    tur -f urls.txt -l 2M                     📋 Batch with speed limit
-    tur -q https://example.com/file.zip       🤫 Silent download
-    tur --gui                                 🖥️  Open GUI
-    tur                                       🖥️  Open GUI (no URLs)
-"#;
-        println!("{}", help);
+        println!();
+        println!(
+            "🚀 {} - A fast, modern download manager",
+            blue.apply_to("tur")
+        );
+        println!();
+        println!("{}", blue.apply_to("USAGE:"));
+        println!("    tur [OPTIONS] [URLS...]");
+        println!();
+        println!("{}", blue.apply_to("MODE:"));
+        println!(
+            "    {}           Terminal mode with progress bars",
+            green.apply_to("(default)")
+        );
+        println!(
+            "    {}, {}       Open graphical interface",
+            cyan.apply_to("-g"),
+            cyan.apply_to("--gui")
+        );
+        println!(
+            "    {}, {}     Silent mode (exit code only)",
+            cyan.apply_to("-q"),
+            cyan.apply_to("--quiet")
+        );
+        println!(
+            "    {}, {} Force interactive TUI",
+            cyan.apply_to("-i"),
+            cyan.apply_to("--interactive")
+        );
+        println!();
+        println!("{}", blue.apply_to("OPTIONS:"));
+        println!(
+            "    {}, {} {}   Read URLs from file",
+            cyan.apply_to("-f"),
+            cyan.apply_to("--file"),
+            yellow.apply_to("<PATH>")
+        );
+        println!(
+            "    {}, {} {}    Download directory",
+            cyan.apply_to("-o"),
+            cyan.apply_to("--output"),
+            yellow.apply_to("<DIR>")
+        );
+        println!(
+            "    {}, {} {} Connections per download (1-64)",
+            cyan.apply_to("-c"),
+            cyan.apply_to("--connections"),
+            yellow.apply_to("<N>")
+        );
+        println!(
+            "    {}, {} {}  Speed limit (1M, 500K, 2G)",
+            cyan.apply_to("-l"),
+            cyan.apply_to("--limit"),
+            yellow.apply_to("<SPEED>")
+        );
+        println!(
+            "    {}, {}   Start GUI minimized to tray",
+            cyan.apply_to("-m"),
+            cyan.apply_to("--minimized")
+        );
+        println!(
+            "    {}, {}       Enable debug logging",
+            cyan.apply_to("-d"),
+            cyan.apply_to("--debug")
+        );
+        println!(
+            "    {}, {}        Print this help message",
+            cyan.apply_to("-h"),
+            cyan.apply_to("--help")
+        );
+        println!(
+            "    {}, {}     Print version information",
+            cyan.apply_to("-V"),
+            cyan.apply_to("--version")
+        );
+        println!();
+        println!("{}", blue.apply_to("EXAMPLES:"));
+        println!("    tur https://example.com/file.zip          📥 Download in terminal");
+        println!("    tur -o ~/Downloads file1.zip file2.zip    📁 Download to directory");
+        println!("    tur -f urls.txt -l 2M                     📋 Batch with speed limit");
+        println!("    tur -q https://example.com/file.zip       🤫 Silent download");
+        println!("    tur --gui                                 🖥️  Open GUI");
+        println!("    tur                                       🖥️  Open GUI (no URLs)");
+        println!();
     }
 
     /// Print version with emoji
