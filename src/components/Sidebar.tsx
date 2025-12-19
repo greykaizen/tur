@@ -122,7 +122,7 @@ export default function Sidebar({ open, onClose, width, onWidthChange, position 
                       className={`text-xs font-semibold text-primary transition-opacity duration-200 ${hoveredId === download.id ? 'opacity-0' : 'opacity-100'
                         }`}
                     >
-                      {download.progress}%
+                      {Math.round(download.progress)}%
                     </span>
 
                     {/* Action Buttons - shown on hover */}

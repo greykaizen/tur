@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Paperclip, Download, X } from 'lucide-react';
+import { useDownloads } from '@/hooks/useDownloads';
 
 interface AddDownloadDialogProps {
   open: boolean;
@@ -13,6 +14,8 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { startDownloads } = useDownloads();
 
   useEffect(() => {
     if (open && inputRef.current) {
@@ -43,7 +46,7 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       const file = files[0];
@@ -81,7 +84,7 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    
+
     // Check if user typed a comma
     if (value.includes(',')) {
       const parts = value.split(',');
@@ -113,13 +116,17 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
     setUrlTags(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleDownload = () => {
-    // TODO: Implement download logic
+  const handleDownload = async () => {
     const allUrls = [...urlTags];
     if (inputValue.trim()) {
       allUrls.push(inputValue.trim());
     }
-    console.log('Starting downloads for:', allUrls);
+
+    if (allUrls.length === 0) return;
+
+    // Call backend to start downloads
+    await startDownloads(allUrls);
+
     onClose();
     setUrlTags([]);
     setInputValue('');
@@ -157,9 +164,8 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            <div className={`bg-card border-2 rounded-xl shadow-xl transition-all ${
-              isDragging ? 'border-blue-500 scale-[1.02]' : 'border-border'
-            }`}>
+            <div className={`bg-card border-2 rounded-xl shadow-xl transition-all ${isDragging ? 'border-blue-500 scale-[1.02]' : 'border-border'
+              }`}>
               <div className="flex items-start gap-3 px-4 py-2.5">
                 {/* Tag input field with max height and scroll */}
                 <div className="flex-1 min-w-0 max-h-[84px] overflow-y-auto">
@@ -179,7 +185,7 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
                         </button>
                       </div>
                     ))}
-                    
+
                     {/* Input field */}
                     <input
                       ref={inputRef}

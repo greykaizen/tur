@@ -105,7 +105,7 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
     tokio::spawn(async move {
         use std::time::Instant;
 
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
         let mut last_bytes = 0usize;
         let start_time = Instant::now();
 
@@ -115,8 +115,9 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
             let downloaded = bytes_downloaded.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
 
+            // Speed calculation: bytes since last update × 10 (since interval is 100ms)
             let speed = if elapsed > 0.0 {
-                ((downloaded.saturating_sub(last_bytes)) as f64 * 2.0) as usize
+                ((downloaded.saturating_sub(last_bytes)) as f64 * 10.0) as usize
             } else {
                 0
             };
