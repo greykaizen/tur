@@ -1,11 +1,15 @@
 //! CLI download runner - standalone download execution for terminal mode
 
+use console::{style, Term};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use futures_util::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::args::AppArgs;
@@ -33,7 +37,26 @@ fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template("{spinner:.green} {msg} {bytes} ({bytes_per_sec})").unwrap()
 }
 
-/// Run downloads in CLI mode
+/// Print controls hint
+fn print_controls() {
+    println!("{}", style("Controls: [C]ancel  [G]UI  [Q]uit").dim());
+    println!();
+}
+
+/// Clear screen and print header
+pub fn clear_and_header() {
+    let _ = Term::stdout().clear_screen();
+    println!();
+    println!(
+        "🚀 {} v{}",
+        style("tur").blue().bold(),
+        env!("CARGO_PKG_VERSION")
+    );
+    println!();
+    print_controls();
+}
+
+/// Run downloads in CLI mode with keyboard controls
 pub async fn run_downloads(args: &AppArgs, urls: Vec<String>) -> Vec<DownloadResult> {
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
@@ -43,8 +66,10 @@ pub async fn run_downloads(args: &AppArgs, urls: Vec<String>) -> Vec<DownloadRes
         .expect("Failed to create HTTP client");
 
     let mp = MultiProgress::new();
-    let mut handles = Vec::new();
-    let mut results = Vec::new();
+
+    // Cancel flag shared across all downloads
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let open_gui_flag = Arc::new(AtomicBool::new(false));
 
     // Determine output directory
     let output_dir = args
@@ -52,7 +77,7 @@ pub async fn run_downloads(args: &AppArgs, urls: Vec<String>) -> Vec<DownloadRes
         .clone()
         .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| PathBuf::from(".")));
 
-    // Speed limit per download (divide by number of concurrent)
+    // Speed limit per download
     let speed_limit = args.parse_speed_limit().unwrap_or(0);
     let per_download_limit = if speed_limit > 0 && !urls.is_empty() {
         speed_limit / urls.len() as u64
@@ -60,14 +85,72 @@ pub async fn run_downloads(args: &AppArgs, urls: Vec<String>) -> Vec<DownloadRes
         0
     };
 
+    // Spawn keyboard listener
+    let cancel_clone = cancel_flag.clone();
+    let gui_clone = open_gui_flag.clone();
+    let kb_handle = std::thread::spawn(move || {
+        loop {
+            if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                if let Ok(Event::Key(KeyEvent {
+                    code, modifiers, ..
+                })) = event::read()
+                {
+                    match code {
+                        // Ctrl+C or 'c' or 'C' to cancel
+                        KeyCode::Char('c') | KeyCode::Char('C') => {
+                            if modifiers.contains(KeyModifiers::CONTROL) || modifiers.is_empty() {
+                                cancel_clone.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                        }
+                        // 'q' or 'Q' to quit
+                        KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            cancel_clone.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        // 'g' or 'G' to open GUI
+                        KeyCode::Char('g') | KeyCode::Char('G') => {
+                            gui_clone.store(true, Ordering::SeqCst);
+                            cancel_clone.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        KeyCode::Esc => {
+                            cancel_clone.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check if downloads are done
+            if cancel_clone.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+
+    let mut handles = Vec::new();
+    let mut results = Vec::new();
+
     for url in urls {
         let client = client.clone();
         let mp = mp.clone();
         let output_dir = output_dir.clone();
         let quiet = args.quiet;
+        let cancel = cancel_flag.clone();
 
         let handle = tokio::spawn(async move {
-            download_file(&client, &url, &output_dir, &mp, quiet, per_download_limit).await
+            download_file(
+                &client,
+                &url,
+                &output_dir,
+                &mp,
+                quiet,
+                per_download_limit,
+                cancel,
+            )
+            .await
         });
         handles.push(handle);
     }
@@ -86,6 +169,17 @@ pub async fn run_downloads(args: &AppArgs, urls: Vec<String>) -> Vec<DownloadRes
         }
     }
 
+    // Stop keyboard listener
+    cancel_flag.store(true, Ordering::SeqCst);
+    let _ = kb_handle.join();
+
+    // Check if user wants to open GUI
+    if open_gui_flag.load(Ordering::SeqCst) {
+        println!();
+        println!("🖥️  Opening GUI...");
+        // This will be handled by main.rs
+    }
+
     results
 }
 
@@ -97,6 +191,7 @@ async fn download_file(
     mp: &MultiProgress,
     quiet: bool,
     speed_limit: u64,
+    cancel_flag: Arc<AtomicBool>,
 ) -> DownloadResult {
     // Extract filename from URL
     let filename = url
@@ -179,6 +274,20 @@ async fn download_file(
     let mut bytes_this_second: u64 = 0;
 
     while let Some(chunk) = stream.next().await {
+        // Check for cancel
+        if cancel_flag.load(Ordering::SeqCst) {
+            if let Some(pb) = pb {
+                pb.abandon_with_message(format!("⏹️  {} - Cancelled", filename));
+            }
+            return DownloadResult {
+                url: url.to_string(),
+                filename,
+                size: downloaded,
+                success: false,
+                error: Some("Cancelled by user".to_string()),
+            };
+        }
+
         match chunk {
             Ok(bytes) => {
                 if file.write_all(&bytes).is_err() {

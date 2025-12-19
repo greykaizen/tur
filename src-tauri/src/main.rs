@@ -62,12 +62,9 @@ fn run_terminal_mode(args: AppArgs) {
         std::process::exit(1);
     }
 
-    // Print header unless quiet
+    // Clear screen and print header unless quiet
     if !args.quiet {
-        let blue = Style::new().blue().bold();
-        println!();
-        println!("🚀 {} v{}", blue.apply_to("tur"), env!("CARGO_PKG_VERSION"));
-        println!();
+        tur_lib::cli::clear_and_header();
     }
 
     // Run async downloads
