@@ -127,16 +127,3 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
         autostart.disable().map_err(|e| e.to_string())
     }
 }
-
-// TODO removal after impl. the uuid to emit and listen for events
-// for instances that are already in history
-// #[tauri::command]
-// fn instance_action(id: Vec<usize>, action: u8) {
-//     // actions: cancel(0), start(1), pause(2)  (assuming item is already in DM)
-//     match action {
-//         // 0 => engine::DownloadManager::pause_instance(id),
-//         // 1 => engine::DownloadManager::start_instance(id),
-//         // 2 => engine::DownloadManager::cancel_instance(id),
-//         _ => unreachable!(),
-//     }
-// }
