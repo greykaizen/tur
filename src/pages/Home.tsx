@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
 import { Paperclip, Download, X, Play, Pause, FolderOpen } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
-import { useDownloads } from '@/hooks/useDownloads';
+import { useDownloads, formatSize, formatSpeed, formatTimeLeft } from '@/hooks/useDownloads';
 
 export default function Home() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const selectedDownload = location.state?.download;
+
+  // Selected download ID - can come from location state or be set when starting downloads
+  const [selectedDownloadId, setSelectedDownloadId] = useState<string | null>(
+    location.state?.download?.id || null
+  );
 
   // Empty state input handling
   const [urlTags, setUrlTags] = useState<string[]>([]);
@@ -20,6 +23,14 @@ export default function Home() {
   const { settings, ready } = useSettings();
   const showDownloadProgress = ready ? settings.app.show_download_progress : true;
   const showSegmentProgress = ready ? settings.app.show_segment_progress : true;
+
+  // Get real downloads data from hook
+  const { downloads, startDownloads, pauseDownload, cancelDownload } = useDownloads();
+
+  // Get selected download from hook (real-time data)
+  const selectedDownload = selectedDownloadId
+    ? downloads.find(d => d.id === selectedDownloadId)
+    : null;
 
   // Notify Layout about empty state - MUST be outside conditional
   useEffect(() => {
@@ -119,9 +130,6 @@ export default function Home() {
     setUrlTags(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Use real downloads hook
-  const { downloads, startDownloads } = useDownloads();
-
   const handleDownload = async () => {
     const allUrls = [...urlTags];
     if (inputValue.trim()) {
@@ -135,7 +143,26 @@ export default function Home() {
 
     setUrlTags([]);
     setInputValue('');
+
+    // Set selected to first download after a brief delay for backend to respond
+    setTimeout(() => {
+      const firstDownload = downloads.length > 0 ? downloads[downloads.length - 1] : null;
+      if (firstDownload) {
+        setSelectedDownloadId(firstDownload.id);
+      }
+    }, 500);
   };
+
+  // Effect to auto-select first download when downloads change and none selected
+  useEffect(() => {
+    if (!selectedDownloadId && downloads.length > 0) {
+      // Select the most recently added download
+      const activeDownload = downloads.find(d => d.status === 'downloading' || d.status === 'queued');
+      if (activeDownload) {
+        setSelectedDownloadId(activeDownload.id);
+      }
+    }
+  }, [downloads, selectedDownloadId]);
 
   // Empty State - No download selected
   if (!selectedDownload) {
@@ -264,23 +291,23 @@ export default function Home() {
               {/* Stats - Aligned values */}
               <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm max-w-md">
                 <span className="font-medium text-muted-foreground">Size:</span>
-                <span className="text-foreground">{selectedDownload.size}</span>
+                <span className="text-foreground">{selectedDownload.size ? formatSize(selectedDownload.size) : 'Unknown'}</span>
 
                 <span className="font-medium text-muted-foreground">Downloaded:</span>
-                <span className="text-foreground">{selectedDownload.downloaded}</span>
+                <span className="text-foreground">{formatSize(selectedDownload.downloaded)}</span>
 
                 <span className="font-medium text-muted-foreground">Speed:</span>
-                <span className="text-foreground">{selectedDownload.speed}</span>
+                <span className="text-foreground">{formatSpeed(selectedDownload.speed)}</span>
 
                 <span className="font-medium text-muted-foreground">Time Left:</span>
-                <span className="text-foreground">{selectedDownload.timeLeft}</span>
+                <span className="text-foreground">{formatTimeLeft(selectedDownload.downloaded, selectedDownload.size || 0, selectedDownload.speed)}</span>
               </div>
             </div>
 
             {/* Percentage Badge - Rounded on left, square on right */}
             <div className="shrink-0 bg-muted/40 px-4 py-2 rounded-l-lg border-r-4 border-green-500">
               <span className="text-2xl font-bold text-green-600 dark:text-green-500">
-                {selectedDownload.progress}%
+                {Math.round(selectedDownload.progress)}%
               </span>
             </div>
           </div>
@@ -288,7 +315,7 @@ export default function Home() {
 
         {/* Action Buttons - Above progress bars */}
         <div className="flex justify-end gap-2">
-          {selectedDownload.status === 'completed' || selectedDownload.progress === 100 ? (
+          {selectedDownload.status === 'completed' || selectedDownload.progress >= 100 ? (
             // Completed: Show Open Folder and Close buttons
             <>
               <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
@@ -297,16 +324,11 @@ export default function Home() {
               </button>
               <button
                 onClick={() => {
-                  // Find the next active download
+                  // Find the next active download or clear selection
                   const activeDownload = downloads.find((d) =>
                     d.status !== 'completed' && d.progress < 100 && d.id !== selectedDownload.id
                   );
-
-                  if (activeDownload) {
-                    navigate('/', { state: { download: activeDownload }, replace: true });
-                  } else {
-                    navigate('/', { replace: true });
-                  }
+                  setSelectedDownloadId(activeDownload?.id || null);
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-border hover:bg-muted transition-colors"
               >
@@ -318,7 +340,10 @@ export default function Home() {
             // Downloading/Paused: Show Pause/Resume and Cancel buttons
             <>
               {selectedDownload.status === 'downloading' ? (
-                <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+                <button
+                  onClick={() => pauseDownload(selectedDownload.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
                   <Pause className="size-3.5" />
                   <span>Pause</span>
                 </button>
@@ -328,7 +353,13 @@ export default function Home() {
                   <span>Resume</span>
                 </button>
               )}
-              <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-destructive text-destructive hover:bg-destructive/10 transition-colors">
+              <button
+                onClick={() => {
+                  cancelDownload(selectedDownload.id);
+                  setSelectedDownloadId(null);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-destructive text-destructive hover:bg-destructive/10 transition-colors"
+              >
                 <X className="size-3.5" />
                 <span>Cancel</span>
               </button>

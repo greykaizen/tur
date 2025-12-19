@@ -135,11 +135,11 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
             };
 
             let _ = handle.emit(
-                &format!("progress_{}", id),
+                "download_progress",
                 serde_json::json!({
                     "id": id.to_string(),
                     "downloaded": downloaded,
-                    "percentage": percentage,
+                    "progress": percentage,
                     "speed": speed,
                     "time_left": time_left,
                 }),
@@ -153,7 +153,7 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
                 let _ = std::fs::remove_file(meta_path);
 
                 let _ = handle.emit(
-                    &format!("download_complete_{}", id),
+                    "download_complete",
                     serde_json::json!({
                         "id": id.to_string(),
                         "destination": destination,
