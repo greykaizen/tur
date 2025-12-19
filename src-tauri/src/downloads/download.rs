@@ -22,6 +22,7 @@ impl Encode for Download {
         self.coordinator.range_byte.end.encode(e)?;
         self.coordinator.steal_ptr.encode(e)?;
         self.coordinator.steal_exhausted.encode(e)?;
+        self.coordinator.total_size.encode(e)?;
 
         // Encode only incomplete ranges (start < end)
         let incomplete: Vec<_> = self
@@ -44,9 +45,10 @@ impl<Context> Decode<Context> for Download {
         let max_index = u8::decode(d)?;
         let steal_ptr = u8::decode(d)?;
         let steal_exhausted = bool::decode(d)?;
+        let total_size = usize::decode(d)?;
 
         let mut coordinator =
-            Coordinator::from_parts(current, max_index, steal_ptr, steal_exhausted);
+            Coordinator::from_parts(current, max_index, steal_ptr, steal_exhausted, total_size);
 
         let len = usize::decode(d)?;
         let mut range = Vec::with_capacity(len);
@@ -73,7 +75,7 @@ impl Download {
     pub fn new(size: usize, num_conn: u8) -> Self {
         let max_index = Self::get_index(size >> 23).unwrap_or(0);
         Download {
-            coordinator: Coordinator::new(max_index),
+            coordinator: Coordinator::new(max_index, size),
             range: Vec::with_capacity(num_conn as usize),
         }
     }

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import PageTransition from '@/components/PageTransition';
 import { MoreVertical, FolderOpen, Trash2, Download, Play, X, CheckCircle2, Clock, Loader2, List, Grid3x3, ChevronDown, Copy } from 'lucide-react';
 import { toast } from 'sonner';
-import mockData from '@/data/mockDownloads.json';
+import { useDownloads } from '@/hooks/useDownloads';
 
 type FilterType = 'all' | 'completed' | 'incomplete';
 type ViewType = 'list' | 'grid';
@@ -14,11 +14,14 @@ export default function History() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
 
-  // Combine all downloads for history
-  const allDownloads = [
-    ...mockData.activeDownloads.map(d => ({ ...d, source: 'active' as const })),
-    ...mockData.historyDownloads.map(d => ({ ...d, source: 'history' as const }))
-  ];
+  // Get downloads from hook
+  const { downloads } = useDownloads();
+
+  // Convert hook data to display format
+  const allDownloads = downloads.map(d => ({
+    ...d,
+    source: d.status === 'completed' || d.status === 'failed' ? 'history' as const : 'active' as const
+  }));
 
   // Filter downloads
   const filteredDownloads = allDownloads.filter(download => {
@@ -153,31 +156,28 @@ export default function History() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setFilter('all')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              filter === 'all'
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'all'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted hover:bg-muted/80'
-            }`}
+              }`}
           >
             All
           </button>
           <button
             onClick={() => setFilter('completed')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              filter === 'completed'
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'completed'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted hover:bg-muted/80'
-            }`}
+              }`}
           >
             Completed
           </button>
           <button
             onClick={() => setFilter('incomplete')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              filter === 'incomplete'
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'incomplete'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted hover:bg-muted/80'
-            }`}
+              }`}
           >
             Incomplete
           </button>
@@ -323,7 +323,7 @@ export default function History() {
                                 <FolderOpen className="size-4" />
                                 Open Location
                               </button>
-                              <button 
+                              <button
                                 onClick={() => handleCopyLink(download.url)}
                                 className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
                               >
@@ -367,21 +367,20 @@ export default function History() {
                 const isCompleted = download.status === 'completed';
                 const isIncomplete = download.status === 'paused' || download.status === 'downloading';
                 const progressPercent = download.progress || 0;
-                
+
                 return (
                   <div
                     key={download.id}
                     className="relative group border border-border rounded-lg overflow-hidden hover:shadow-md transition-all"
                   >
                     {/* Progress bar background - solid color */}
-                    <div 
-                      className={`absolute inset-0 ${
-                        isCompleted 
-                          ? 'bg-green-500/10' 
-                          : isIncomplete 
+                    <div
+                      className={`absolute inset-0 ${isCompleted
+                          ? 'bg-green-500/10'
+                          : isIncomplete
                             ? 'bg-yellow-500/15'
                             : ''
-                      }`}
+                        }`}
                       style={
                         isIncomplete && !isCompleted
                           ? { width: `${progressPercent}%` }
@@ -440,7 +439,7 @@ export default function History() {
                                   <FolderOpen className="size-4" />
                                   Open Location
                                 </button>
-                                <button 
+                                <button
                                   onClick={() => handleCopyLink(download.url)}
                                   className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
                                 >

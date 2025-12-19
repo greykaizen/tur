@@ -23,23 +23,33 @@ pub struct Coordinator {
     pub steal_ptr: u8,
     /// Full circle completed, no more stealing possible
     pub steal_exhausted: bool,
+    /// Total file size in bytes (for clamping ranges)
+    pub total_size: usize,
 }
 
 impl Coordinator {
-    pub fn new(max_index: u8) -> Self {
+    pub fn new(max_index: u8, total_size: usize) -> Self {
         Coordinator {
             range_byte: 0..max_index,
             steal_ptr: 2, // Starts from index 2 as per arch
             steal_exhausted: false,
+            total_size,
         }
     }
 
     /// Reconstruct coordinator from deserialized parts
-    pub fn from_parts(current: u8, max_index: u8, steal_ptr: u8, steal_exhausted: bool) -> Self {
+    pub fn from_parts(
+        current: u8,
+        max_index: u8,
+        steal_ptr: u8,
+        steal_exhausted: bool,
+        total_size: usize,
+    ) -> Self {
         Coordinator {
             range_byte: current..max_index,
             steal_ptr,
             steal_exhausted,
+            total_size,
         }
     }
 
@@ -55,9 +65,9 @@ impl Coordinator {
             self.range_byte.start += 1;
 
             let byte_range = RANGE[idx].clone();
-            // Convert from 8MB units to bytes
+            // Convert from 8MB units to bytes, clamp to total_size
             let start_bytes = byte_range.start << 23; // * 8MB
-            let end_bytes = byte_range.end << 23;
+            let end_bytes = (byte_range.end << 23).min(self.total_size);
 
             let index = Arc::new(Index {
                 start: AtomicUsize::new(start_bytes),
