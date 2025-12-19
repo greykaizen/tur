@@ -3,13 +3,13 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
 import { Paperclip, Download, X, Play, Pause, FolderOpen } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
-import mockData from '@/data/mockDownloads.json';
+import { useDownloads } from '@/hooks/useDownloads';
 
 export default function Home() {
   const location = useLocation();
   const navigate = useNavigate();
   const selectedDownload = location.state?.download;
-  
+
   // Empty state input handling
   const [urlTags, setUrlTags] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -50,7 +50,7 @@ export default function Home() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       const file = files[0];
@@ -88,7 +88,7 @@ export default function Home() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    
+
     if (value.includes(',')) {
       const parts = value.split(',');
       const newTags = parts.slice(0, -1).map(p => p.trim()).filter(p => p);
@@ -119,44 +119,20 @@ export default function Home() {
     setUrlTags(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleDownload = () => {
+  // Use real downloads hook
+  const { downloads, startDownloads } = useDownloads();
+
+  const handleDownload = async () => {
     const allUrls = [...urlTags];
     if (inputValue.trim()) {
       allUrls.push(inputValue.trim());
     }
-    
+
     if (allUrls.length === 0) return;
-    
-    // Create mock downloads from URLs
-    const newDownloads = allUrls.map((url, index) => {
-      const filename = url.split('/').pop() || `download-${Date.now()}-${index}`;
-      return {
-        id: `dl-new-${Date.now()}-${index}`,
-        url: url,
-        filename: filename,
-        size: '0 MB',
-        downloaded: '0 MB',
-        speed: '0 MB/s',
-        timeLeft: 'Starting...',
-        progress: 0,
-        status: 'downloading',
-        resume: true,
-        startedAt: new Date().toISOString(),
-        segments: []
-      };
-    });
-    
-    // Store downloads in sessionStorage so sidebar can access them
-    sessionStorage.setItem('activeDownloads', JSON.stringify(newDownloads));
-    
-    // Navigate to download view with the first download
-    navigate('/', { state: { download: newDownloads[0] }, replace: true });
-    
-    // Open sidebar if there are multiple downloads
-    if (newDownloads.length > 1) {
-      window.dispatchEvent(new CustomEvent('toggle-sidebar'));
-    }
-    
+
+    // Call backend to start downloads
+    await startDownloads(allUrls);
+
     setUrlTags([]);
     setInputValue('');
   };
@@ -166,7 +142,7 @@ export default function Home() {
     return (
       <PageTransition className="h-full w-full overflow-hidden relative">
         {/* Content */}
-        <div 
+        <div
           className="relative h-full flex flex-col px-4 pt-8"
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -174,81 +150,79 @@ export default function Home() {
         >
           {/* Logo + Name at Top - Golden Ratio Sizing */}
           <div className="flex items-center justify-center gap-3 mb-4">
-  <img src="/icon.png" alt="tur logo" className="mb-2.5 w-[54px] h-[54px]" />
-  <h1 
-    className="text-5xl" 
-    style={{ 
-      fontFamily: "'Modak', cursive",
-      WebkitTextStroke: '1.5px',
-      WebkitTextFillColor: 'transparent',
-      letterSpacing: '0.05em'
-    }}
-  >
-    tur
-  </h1>
-</div>
+            <img src="/icon.png" alt="tur logo" className="mb-2.5 w-[54px] h-[54px]" />
+            <h1
+              className="text-5xl"
+              style={{
+                fontFamily: "'Modak', cursive",
+                WebkitTextStroke: '1.5px',
+                WebkitTextFillColor: 'transparent',
+                letterSpacing: '0.05em'
+              }}
+            >
+              tur
+            </h1>
+          </div>
 
           {/* Input Field - Right below logo */}
           <div className="w-full max-w-md mx-auto">
-            <div className={`transition-all ${
-              isDragging ? 'scale-105' : ''
-            }`}>
-            <div className={`bg-card/80 backdrop-blur-sm border-2 rounded-xl shadow-xl transition-all ${
-              isDragging ? 'border-blue-500' : 'border-border'
-            }`}>
-              <div className="flex items-start gap-2 px-3 py-2">
-                {/* Tag input field */}
-                <div className="flex-1 min-w-0 max-h-[60px] overflow-y-auto">
-                  <div className="flex flex-wrap gap-1.5 items-center">
-                    {/* URL Tags */}
-                    {urlTags.map((url, index) => (
-                      <div
-                        key={index}
-                        className="inline-flex items-center gap-1 bg-blue-600/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-md text-xs"
-                      >
-                        <span className="max-w-[180px] truncate">{url}</span>
-                        <button
-                          onClick={() => removeTag(index)}
-                          className="hover:bg-blue-600/20 rounded-sm p-0.5"
+            <div className={`transition-all ${isDragging ? 'scale-105' : ''
+              }`}>
+              <div className={`bg-card/80 backdrop-blur-sm border-2 rounded-xl shadow-xl transition-all ${isDragging ? 'border-blue-500' : 'border-border'
+                }`}>
+                <div className="flex items-start gap-2 px-3 py-2">
+                  {/* Tag input field */}
+                  <div className="flex-1 min-w-0 max-h-[60px] overflow-y-auto">
+                    <div className="flex flex-wrap gap-1.5 items-center">
+                      {/* URL Tags */}
+                      {urlTags.map((url, index) => (
+                        <div
+                          key={index}
+                          className="inline-flex items-center gap-1 bg-blue-600/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-md text-xs"
                         >
-                          <X className="h-2.5 w-2.5" />
-                        </button>
-                      </div>
-                    ))}
-                    
-                    {/* Input field */}
-                    <input
-                      ref={inputRef}
-                      type="text"
-                      value={inputValue}
-                      onChange={handleInputChange}
-                      onKeyDown={handleKeyDown}
-                      placeholder={urlTags.length === 0 ? "Enter URL or drag & drop file" : ""}
-                      className="flex-1 min-w-[100px] bg-transparent text-sm focus:outline-none py-1"
-                    />
+                          <span className="max-w-[180px] truncate">{url}</span>
+                          <button
+                            onClick={() => removeTag(index)}
+                            className="hover:bg-blue-600/20 rounded-sm p-0.5"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      ))}
+
+                      {/* Input field */}
+                      <input
+                        ref={inputRef}
+                        type="text"
+                        value={inputValue}
+                        onChange={handleInputChange}
+                        onKeyDown={handleKeyDown}
+                        placeholder={urlTags.length === 0 ? "Enter URL or drag & drop file" : ""}
+                        className="flex-1 min-w-[100px] bg-transparent text-sm focus:outline-none py-1"
+                      />
+                    </div>
                   </div>
+
+                  {/* File browser button */}
+                  <button
+                    onClick={handleFileSelect}
+                    className="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
+                    title="Browse File"
+                  >
+                    <Paperclip className="h-4 w-4 text-muted-foreground" />
+                  </button>
+
+                  {/* Download button */}
+                  <button
+                    onClick={handleDownload}
+                    disabled={urlTags.length === 0 && !inputValue.trim()}
+                    className="p-1.5 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                    title="Download"
+                  >
+                    <Download className="h-4 w-4 text-white" />
+                  </button>
                 </div>
-
-                {/* File browser button */}
-                <button
-                  onClick={handleFileSelect}
-                  className="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
-                  title="Browse File"
-                >
-                  <Paperclip className="h-4 w-4 text-muted-foreground" />
-                </button>
-
-                {/* Download button */}
-                <button
-                  onClick={handleDownload}
-                  disabled={urlTags.length === 0 && !inputValue.trim()}
-                  className="p-1.5 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
-                  title="Download"
-                >
-                  <Download className="h-4 w-4 text-white" />
-                </button>
               </div>
-            </div>
 
               {/* Helper text */}
               <p className="text-center text-xs text-muted-foreground mt-3">
@@ -274,11 +248,11 @@ export default function Home() {
   return (
     <PageTransition className="h-full w-full overflow-hidden relative">
       {/* Opaque Progress Background */}
-      <div 
+      <div
         className="absolute inset-0 bg-green-500/5 transition-all duration-300"
         style={{ width: `${selectedDownload.progress}%` }}
       />
-      
+
       <div className="relative h-full flex flex-col p-4 space-y-4">
         {/* Download Header */}
         <div className="space-y-3">
@@ -286,23 +260,23 @@ export default function Home() {
             <div className="flex-1 min-w-0 space-y-2">
               <h2 className="text-lg font-semibold truncate">{selectedDownload.filename}</h2>
               <p className="text-xs text-muted-foreground truncate">{selectedDownload.url}</p>
-              
+
               {/* Stats - Aligned values */}
               <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm max-w-md">
                 <span className="font-medium text-muted-foreground">Size:</span>
                 <span className="text-foreground">{selectedDownload.size}</span>
-                
+
                 <span className="font-medium text-muted-foreground">Downloaded:</span>
                 <span className="text-foreground">{selectedDownload.downloaded}</span>
-                
+
                 <span className="font-medium text-muted-foreground">Speed:</span>
                 <span className="text-foreground">{selectedDownload.speed}</span>
-                
+
                 <span className="font-medium text-muted-foreground">Time Left:</span>
                 <span className="text-foreground">{selectedDownload.timeLeft}</span>
               </div>
             </div>
-            
+
             {/* Percentage Badge - Rounded on left, square on right */}
             <div className="shrink-0 bg-muted/40 px-4 py-2 rounded-l-lg border-r-4 border-green-500">
               <span className="text-2xl font-bold text-green-600 dark:text-green-500">
@@ -321,31 +295,16 @@ export default function Home() {
                 <FolderOpen className="size-3.5" />
                 <span>Open Folder</span>
               </button>
-              <button 
+              <button
                 onClick={() => {
-                  // Get active downloads from sessionStorage
-                  const activeDownloadsStr = sessionStorage.getItem('activeDownloads');
-                  let allDownloads = mockData.activeDownloads || [];
-                  
-                  if (activeDownloadsStr) {
-                    try {
-                      const sessionDownloads = JSON.parse(activeDownloadsStr);
-                      allDownloads = [...allDownloads, ...sessionDownloads];
-                    } catch (e) {
-                      console.error('Error parsing activeDownloads:', e);
-                    }
-                  }
-                  
-                  // Find the most recent active (non-completed) download that's not the current one
-                  const activeDownload = allDownloads.find((d: any) => 
+                  // Find the next active download
+                  const activeDownload = downloads.find((d) =>
                     d.status !== 'completed' && d.progress < 100 && d.id !== selectedDownload.id
                   );
-                  
+
                   if (activeDownload) {
-                    // Navigate to the most recent active download
                     navigate('/', { state: { download: activeDownload }, replace: true });
                   } else {
-                    // No active downloads, go to empty state
                     navigate('/', { replace: true });
                   }
                 }}
@@ -382,7 +341,7 @@ export default function Home() {
           <div className="space-y-3">
             {showDownloadProgress && (
               <div className="relative w-full h-6 bg-muted/40 border border-border rounded-sm overflow-hidden">
-                <div 
+                <div
                   className="absolute inset-y-0 left-0 bg-green-500/50 dark:bg-green-500/40 transition-all duration-300"
                   style={{ width: `${selectedDownload.progress}%` }}
                 />
@@ -395,7 +354,7 @@ export default function Home() {
                   <div
                     key={index}
                     className="absolute inset-y-0 bg-blue-400/70 dark:bg-blue-400/60"
-                    style={{ 
+                    style={{
                       left: `${segment.start}%`,
                       width: `${segment.end - segment.start}%`
                     }}
