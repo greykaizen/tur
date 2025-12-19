@@ -1,6 +1,6 @@
 [package]
 name = "tur"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["greykaizen"]
 description = "A download manager built smarter and more reliable. Reimagined from the ground up."
