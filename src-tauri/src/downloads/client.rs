@@ -40,7 +40,7 @@ pub fn create(settings: &AppSettings) -> Result<Client, String> {
         .connect_timeout(Duration::from_secs(network.connect_timeout_secs as u64))
         .read_timeout(Duration::from_secs(network.read_timeout_secs as u64))
         // Connection pooling for better performance
-        .pool_max_idle_per_host(settings.thread.total_connections as usize)
+        .pool_max_idle_per_host(settings.download.num_threads as usize)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(60))
         // User agent from settings

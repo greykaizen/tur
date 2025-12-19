@@ -1,15 +1,22 @@
-use super::config::AppSettings;
+use super::config::{
+    AppConfig, AppSettings, DownloadConfig, NetworkConfig, ProxyConfig, SessionConfig,
+    ShortcutConfig,
+};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 const STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
+/// Load settings from store or create defaults
 pub fn load_or_create(app: &AppHandle) -> AppSettings {
     match load_existing(app) {
-        Ok(settings) => settings,
+        Ok(mut settings) => {
+            // Validate after loading (clamps to valid ranges)
+            settings.validate();
+            settings
+        }
         Err(_) => {
-            // Store doesn't exist or is corrupted, create with defaults
             let default_settings = AppSettings::default();
             if let Err(e) = save(app, &default_settings) {
                 eprintln!("Warning: Failed to save default settings: {}", e);
@@ -21,64 +28,74 @@ pub fn load_or_create(app: &AppHandle) -> AppSettings {
 
 fn load_existing(app: &AppHandle) -> Result<AppSettings, String> {
     let store = app.store(STORE_PATH).map_err(|e| e.to_string())?;
-    
-    // Check if store exists and has our settings key
+
     match store.get(SETTINGS_KEY) {
-        Some(value) => {
-            serde_json::from_value(value.clone())
-                .map_err(|e| format!("Failed to deserialize settings: {}", e))
-        }
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|e| format!("Failed to deserialize settings: {}", e)),
         None => Err("Settings key not found in store".to_string()),
     }
 }
 
 pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     let store = app.store(STORE_PATH).map_err(|e| e.to_string())?;
-    
+
     let value = serde_json::to_value(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    
+
     store.set(SETTINGS_KEY, value);
     store.save().map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
+/// Update a single field by dot-notation key
 pub fn update_field(app: &AppHandle, key: &str, value: serde_json::Value) -> Result<(), String> {
     let mut settings = load_or_create(app);
-    
+
     let parts: Vec<&str> = key.split('.').collect();
-    
+
     match parts.as_slice() {
-        ["app", field] => {
-            update_app_field(&mut settings.app, field, value)?;
+        // App settings
+        ["app", field] => update_app_field(&mut settings.app, field, value)?,
+
+        // Shortcuts
+        ["shortcuts", field] => update_shortcuts_field(&mut settings.shortcuts, field, value)?,
+
+        // Download settings
+        ["download", field] => update_download_field(&mut settings.download, field, value)?,
+
+        // Network settings
+        ["network", field] => update_network_field(&mut settings.network, field, value)?,
+
+        // Proxy settings (nested under network)
+        ["network", "proxy", field] => {
+            update_proxy_field(&mut settings.network.proxy, field, value)?
         }
-        ["shortcuts", field] => {
-            update_shortcuts_field(&mut settings.shortcuts, field, value)?;
-        }
-        ["download", field] => {
-            update_download_field(&mut settings.download, field, value)?;
-        }
-        ["thread", field] => {
-            update_thread_field(&mut settings.thread, field, value)?;
-        }
-        ["session", field] => {
-            update_session_field(&mut settings.session, field, value)?;
-        }
+
+        // Session settings
+        ["session", field] => update_session_field(&mut settings.session, field, value)?,
+
+        // Top-level flags
         ["send_anonymous_metrics"] => {
             settings.send_anonymous_metrics = value.as_bool().unwrap_or(false);
         }
         ["show_notifications"] => {
             settings.show_notifications = value.as_bool().unwrap_or(true);
         }
+        ["notification_sound"] => {
+            settings.notification_sound = value.as_bool().unwrap_or(true);
+        }
+
         _ => return Err(format!("Unknown setting key: {}", key)),
     }
-    
+
+    // Validate before saving
+    settings.validate();
     save(app, &settings)
 }
 
 fn update_app_field(
-    config: &mut super::config::AppConfig,
+    config: &mut AppConfig,
     field: &str,
     value: serde_json::Value,
 ) -> Result<(), String> {
@@ -91,13 +108,14 @@ fn update_app_field(
         "show_download_progress" => config.show_download_progress = value.as_bool().unwrap_or(true),
         "show_segment_progress" => config.show_segment_progress = value.as_bool().unwrap_or(true),
         "autostart" => config.autostart = value.as_bool().unwrap_or(false),
+        "auto_resume" => config.auto_resume = value.as_bool().unwrap_or(false),
         _ => return Err(format!("Unknown app field: {}", field)),
     }
     Ok(())
 }
 
 fn update_shortcuts_field(
-    config: &mut super::config::ShortcutConfig,
+    config: &mut ShortcutConfig,
     field: &str,
     value: serde_json::Value,
 ) -> Result<(), String> {
@@ -117,46 +135,73 @@ fn update_shortcuts_field(
 }
 
 fn update_download_field(
-    config: &mut super::config::DownloadConfig,
+    config: &mut DownloadConfig,
     field: &str,
     value: serde_json::Value,
 ) -> Result<(), String> {
     match field {
         "download_location" => config.download_location = value.as_str().unwrap_or("").to_string(),
         "num_threads" => config.num_threads = value.as_u64().unwrap_or(8) as u8,
-        "chunk_size" => config.chunk_size = value.as_u64().unwrap_or(16) as u32,
-        "socket_buffer_size" => config.socket_buffer_size = value.as_u64().unwrap_or(0) as u32,
+        "max_concurrent" => config.max_concurrent = value.as_u64().unwrap_or(0) as u8,
         "speed_limit" => config.speed_limit = value.as_u64().unwrap_or(0),
+        "conflict_action" => config.conflict_action = value.as_str().unwrap_or("ask").to_string(),
         _ => return Err(format!("Unknown download field: {}", field)),
     }
     Ok(())
 }
 
-fn update_thread_field(
-    config: &mut super::config::ThreadConfig,
+fn update_network_field(
+    config: &mut NetworkConfig,
     field: &str,
     value: serde_json::Value,
 ) -> Result<(), String> {
     match field {
-        "total_connections" => config.total_connections = value.as_u64().unwrap_or(1) as u8,
-        "per_task_connections" => config.per_task_connections = value.as_u64().unwrap_or(1) as u8,
-        _ => return Err(format!("Unknown thread field: {}", field)),
+        "user_agent" => config.user_agent = value.as_str().unwrap_or("chrome").to_string(),
+        "custom_user_agent" => config.custom_user_agent = value.as_str().unwrap_or("").to_string(),
+        "connect_timeout_secs" => config.connect_timeout_secs = value.as_u64().unwrap_or(15) as u16,
+        "read_timeout_secs" => config.read_timeout_secs = value.as_u64().unwrap_or(30) as u16,
+        "retry_count" => config.retry_count = value.as_u64().unwrap_or(3) as u8,
+        "retry_delay_ms" => config.retry_delay_ms = value.as_u64().unwrap_or(1000) as u32,
+        "allow_insecure" => config.allow_insecure = value.as_bool().unwrap_or(false),
+        _ => return Err(format!("Unknown network field: {}", field)),
+    }
+    Ok(())
+}
+
+fn update_proxy_field(
+    config: &mut ProxyConfig,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    match field {
+        "enabled" => config.enabled = value.as_bool().unwrap_or(false),
+        "proxy_type" => config.proxy_type = value.as_str().unwrap_or("http").to_string(),
+        "host" => config.host = value.as_str().unwrap_or("").to_string(),
+        "port" => config.port = value.as_u64().unwrap_or(8080) as u16,
+        "auth_enabled" => config.auth_enabled = value.as_bool().unwrap_or(false),
+        "username" => config.username = value.as_str().unwrap_or("").to_string(),
+        "password" => config.password = value.as_str().unwrap_or("").to_string(),
+        _ => return Err(format!("Unknown proxy field: {}", field)),
     }
     Ok(())
 }
 
 fn update_session_field(
-    config: &mut super::config::SessionConfig,
+    config: &mut SessionConfig,
     field: &str,
     value: serde_json::Value,
 ) -> Result<(), String> {
     match field {
-        "history" => config.history = value.as_bool().unwrap_or(false),
-        "metadata" => config.metadata = value.as_bool().unwrap_or(false),
+        "history" => config.history = value.as_bool().unwrap_or(true),
+        "metadata" => config.metadata = value.as_bool().unwrap_or(true),
         _ => return Err(format!("Unknown session field: {}", field)),
     }
     Ok(())
 }
+
+// ============================================================================
+// Tauri Commands
+// ============================================================================
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> AppSettings {
@@ -164,7 +209,8 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
 }
 
 #[tauri::command]
-pub fn update_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
+pub fn update_settings(app: AppHandle, mut settings: AppSettings) -> Result<(), String> {
+    settings.validate();
     save(&app, &settings)
 }
 

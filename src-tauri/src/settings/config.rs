@@ -1,17 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Main application settings container
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub app: AppConfig,
     pub shortcuts: ShortcutConfig,
     pub download: DownloadConfig,
-    pub thread: ThreadConfig,
-    pub session: SessionConfig,
     pub network: NetworkConfig,
+    pub session: SessionConfig,
     pub send_anonymous_metrics: bool,
     pub show_notifications: bool,
+    pub notification_sound: bool,
 }
 
+/// General application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub show_tray_icon: bool,
@@ -22,8 +24,11 @@ pub struct AppConfig {
     pub show_download_progress: bool,
     pub show_segment_progress: bool,
     pub autostart: bool,
+    /// Resume incomplete downloads when app starts
+    pub auto_resume: bool,
 }
 
+/// Keyboard shortcut bindings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutConfig {
     pub go_home: String,
@@ -36,38 +41,33 @@ pub struct ShortcutConfig {
     pub quit_app: String,
 }
 
+/// Download behavior configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadConfig {
+    /// Default download directory
     pub download_location: String,
+    /// Number of connections per download (1-64)
     pub num_threads: u8,
-    pub chunk_size: u32,
-    pub socket_buffer_size: u32,
+    /// Maximum concurrent downloads (0 = unlimited)
+    pub max_concurrent: u8,
+    /// Global speed limit in bytes/sec (0 = unlimited)
     pub speed_limit: u64,
+    /// How to handle filename conflicts: "rename", "overwrite", "skip", "ask"
+    pub conflict_action: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadConfig {
-    pub total_connections: u8,
-    pub per_task_connections: u8,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionConfig {
-    pub history: bool,
-    pub metadata: bool,
-}
-
+/// Network and HTTP client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    /// User agent preset: "chrome", "firefox", "edge", "tur", "custom"
+    /// User agent preset: "chrome", "firefox", "edge", "safari", "custom"
     pub user_agent: String,
     /// Custom user agent string (used when user_agent == "custom")
     pub custom_user_agent: String,
-    /// Connection timeout in seconds
+    /// Connection timeout in seconds (1-300)
     pub connect_timeout_secs: u16,
-    /// Read timeout in seconds (per chunk)
+    /// Read timeout in seconds per chunk (1-300)
     pub read_timeout_secs: u16,
-    /// Number of retry attempts on failure
+    /// Number of retry attempts on failure (0-10)
     pub retry_count: u8,
     /// Delay between retries in milliseconds
     pub retry_delay_ms: u32,
@@ -77,6 +77,7 @@ pub struct NetworkConfig {
     pub proxy: ProxyConfig,
 }
 
+/// Proxy server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     /// Enable proxy
@@ -91,9 +92,22 @@ pub struct ProxyConfig {
     pub auth_enabled: bool,
     /// Proxy username
     pub username: String,
-    /// Proxy password (stored in plain text for now)
+    /// Proxy password
     pub password: String,
 }
+
+/// Session and data retention settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Store download history in database (false = don't record new downloads)
+    pub history: bool,
+    /// Save metadata on pause/cancel for resume (false = no resume capability)
+    pub metadata: bool,
+}
+
+// ============================================================================
+// Default implementations
+// ============================================================================
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -101,11 +115,11 @@ impl Default for AppSettings {
             app: AppConfig::default(),
             shortcuts: ShortcutConfig::default(),
             download: DownloadConfig::default(),
-            thread: ThreadConfig::default(),
-            session: SessionConfig::default(),
             network: NetworkConfig::default(),
+            session: SessionConfig::default(),
             send_anonymous_metrics: false,
             show_notifications: true,
+            notification_sound: true,
         }
     }
 }
@@ -121,6 +135,7 @@ impl Default for AppConfig {
             show_download_progress: true,
             show_segment_progress: true,
             autostart: false,
+            auto_resume: false,
         }
     }
 }
@@ -145,27 +160,9 @@ impl Default for DownloadConfig {
         Self {
             download_location: get_default_download_dir(),
             num_threads: 8,
-            chunk_size: 16,
-            socket_buffer_size: 0,
-            speed_limit: 0,
-        }
-    }
-}
-
-impl Default for ThreadConfig {
-    fn default() -> Self {
-        Self {
-            total_connections: 1,
-            per_task_connections: 1,
-        }
-    }
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            history: false,
-            metadata: false,
+            max_concurrent: 0, // 0 = unlimited
+            speed_limit: 0,    // 0 = unlimited
+            conflict_action: "ask".into(),
         }
     }
 }
@@ -199,11 +196,66 @@ impl Default for ProxyConfig {
     }
 }
 
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            history: true,
+            metadata: true,
+        }
+    }
+}
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+impl AppSettings {
+    /// Validate and clamp settings to valid ranges
+    pub fn validate(&mut self) {
+        self.download.validate();
+        self.network.validate();
+    }
+}
+
+impl DownloadConfig {
+    pub fn validate(&mut self) {
+        // num_threads: 1-64
+        self.num_threads = self.num_threads.clamp(1, 64);
+        // max_concurrent: 0-32 (0 = unlimited)
+        self.max_concurrent = self.max_concurrent.min(32);
+        // conflict_action must be valid
+        if !["rename", "overwrite", "skip", "ask"].contains(&self.conflict_action.as_str()) {
+            self.conflict_action = "ask".into();
+        }
+    }
+}
+
+impl NetworkConfig {
+    pub fn validate(&mut self) {
+        // Timeouts: 1-300 seconds
+        self.connect_timeout_secs = self.connect_timeout_secs.clamp(1, 300);
+        self.read_timeout_secs = self.read_timeout_secs.clamp(1, 300);
+        // Retry count: 0-10
+        self.retry_count = self.retry_count.min(10);
+        // User agent must be valid preset or "custom"
+        if !["chrome", "firefox", "edge", "safari", "custom"].contains(&self.user_agent.as_str()) {
+            self.user_agent = "chrome".into();
+        }
+        // Proxy type must be valid
+        if !["http", "https", "socks5"].contains(&self.proxy.proxy_type.as_str()) {
+            self.proxy.proxy_type = "http".into();
+        }
+    }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
 fn get_default_download_dir() -> String {
     dirs::download_dir()
         .and_then(|path| path.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| {
-            // Fallback if dirs crate fails
             dirs::home_dir()
                 .and_then(|home| {
                     let downloads = home.join("Downloads");
