@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import PageTransition from '@/components/PageTransition';
 import { MoreVertical, FolderOpen, Trash2, Download, Play, X, CheckCircle2, Clock, Loader2, List, Grid3x3, ChevronDown, Copy } from 'lucide-react';
 import { toast } from 'sonner';
-import { useDownloads } from '@/hooks/useDownloads';
+import { useDownloads, formatSize } from '@/hooks/useDownloads';
 
 type FilterType = 'all' | 'completed' | 'incomplete';
 type ViewType = 'list' | 'grid';
@@ -277,7 +277,7 @@ export default function History() {
                   <td className="px-3 py-3">
                     <div className="flex flex-col min-w-0">
                       <span className="text-sm font-medium truncate">{truncateFilename(download.filename)}</span>
-                      <span className="text-xs text-muted-foreground">{download.size}</span>
+                      <span className="text-xs text-muted-foreground">{download.size ? formatSize(download.size) : 'Unknown'}</span>
                     </div>
                   </td>
                   <td className="px-3 py-3">
@@ -478,7 +478,7 @@ export default function History() {
 
                         {/* Size */}
                         <p className="text-[10px] text-muted-foreground">
-                          {download.size}
+                          {download.size ? formatSize(download.size) : 'Unknown'}
                         </p>
                       </div>
                     </div>

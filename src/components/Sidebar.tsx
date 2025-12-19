@@ -20,7 +20,7 @@ export default function Sidebar({ open, onClose, width, onWidthChange, position 
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Use real downloads from hook
-  const { downloads: allDownloads, pauseDownload, cancelDownload } = useDownloads();
+  const { downloads: allDownloads, pauseDownload, cancelDownload, resumeDownloads } = useDownloads();
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -102,7 +102,9 @@ export default function Sidebar({ open, onClose, width, onWidthChange, position 
               <div
                 key={download.id}
                 onClick={() => {
-                  navigate('/', { state: { download } });
+                  // Dispatch event for Home page to select this download
+                  window.dispatchEvent(new CustomEvent('select-download', { detail: { id: download.id } }));
+                  navigate('/');
                 }}
                 onMouseEnter={() => setHoveredId(download.id)}
                 onMouseLeave={() => setHoveredId(null)}
@@ -133,7 +135,11 @@ export default function Sidebar({ open, onClose, width, onWidthChange, position 
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          pauseDownload(download.id);
+                          if (download.status === 'downloading') {
+                            pauseDownload(download.id);
+                          } else if (download.status === 'paused') {
+                            resumeDownloads([download.id]);
+                          }
                         }}
                         className="p-1 hover:bg-sidebar rounded transition-colors"
                         title={download.status === 'downloading' ? 'Pause' : 'Resume'}

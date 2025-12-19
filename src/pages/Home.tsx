@@ -32,6 +32,17 @@ export default function Home() {
     ? downloads.find(d => d.id === selectedDownloadId)
     : null;
 
+  // Listen for select-download event from sidebar
+  useEffect(() => {
+    const handleSelectDownload = (e: CustomEvent<{ id: string }>) => {
+      setSelectedDownloadId(e.detail.id);
+    };
+    window.addEventListener('select-download', handleSelectDownload as EventListener);
+    return () => {
+      window.removeEventListener('select-download', handleSelectDownload as EventListener);
+    };
+  }, []);
+
   // Notify Layout about empty state - MUST be outside conditional
   useEffect(() => {
     if (!selectedDownload) {
