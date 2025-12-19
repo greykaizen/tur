@@ -56,6 +56,7 @@ pub fn run() {
             downloads::manager::cancel_download,
             downloads::manager::is_download_active,
             downloads::manager::active_download_count,
+            downloads::manager::get_download_history,
         ])
         .setup(|app| {
             // Initialize and manage DownloadManager

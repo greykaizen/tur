@@ -191,6 +191,48 @@ export function useDownloads() {
         }
     }, []);
 
+    // Load history from database (for History page and app restart)
+    const loadHistory = useCallback(async () => {
+        try {
+            setError(null);
+            const history = await invoke<Array<{
+                id: string;
+                url: string;
+                filename: string;
+                size: number | null;
+                bytes_received: number;
+                destination: string;
+                accept_ranges: boolean;
+                status: string | null;
+            }>>('get_download_history');
+
+            // Add history items to downloads map
+            setDownloads(prev => {
+                const next = new Map(prev);
+                for (const item of history) {
+                    // Don't overwrite active downloads
+                    if (!next.has(item.id)) {
+                        next.set(item.id, {
+                            id: item.id,
+                            url: item.url,
+                            filename: item.filename,
+                            size: item.size,
+                            downloaded: item.bytes_received,
+                            speed: 0,
+                            progress: item.size ? (item.bytes_received / item.size) * 100 : 0,
+                            status: (item.status as DownloadInfo['status']) || 'queued',
+                            destination: item.destination,
+                            resume_supported: item.accept_ranges,
+                        });
+                    }
+                }
+                return next;
+            });
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        }
+    }, []);
+
     // Get downloads as array
     const downloadList = Array.from(downloads.values());
 
@@ -205,6 +247,7 @@ export function useDownloads() {
         resumeDownloads,
         pauseDownload,
         cancelDownload,
+        loadHistory,
     };
 }
 

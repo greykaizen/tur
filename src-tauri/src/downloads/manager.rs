@@ -417,3 +417,10 @@ pub fn is_download_active(manager: tauri::State<'_, DownloadManager>, id: Uuid) 
 pub fn active_download_count(manager: tauri::State<'_, DownloadManager>) -> usize {
     manager.active_count()
 }
+
+/// Tauri command for getting download history from database
+#[tauri::command]
+pub fn get_download_history(app: AppHandle) -> Result<Vec<crate::database::Download>, String> {
+    let db = crate::database::Database::initialize(&app).map_err(|e| e.to_string())?;
+    db.get_downloads().map_err(|e| e.to_string())
+}

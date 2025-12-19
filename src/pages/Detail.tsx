@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
 import { Play, Square, X, Pause, List, Grid3x3, ChevronDown, ListOrdered } from 'lucide-react';
@@ -14,7 +14,12 @@ export default function Detail() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Get downloads from hook
-  const { downloads } = useDownloads();
+  const { downloads, loadHistory } = useDownloads();
+
+  // Load history from database on mount
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
 
   // Convert hook data to display format
   const allDownloads = downloads.map(d => ({

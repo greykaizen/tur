@@ -1,10 +1,11 @@
 use rusqlite::{params, Connection, Result};
+use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Download {
     pub id: Uuid,
     pub filename: String,

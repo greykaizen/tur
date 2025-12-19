@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import PageTransition from '@/components/PageTransition';
 import { MoreVertical, FolderOpen, Trash2, Download, Play, X, CheckCircle2, Clock, Loader2, List, Grid3x3, ChevronDown, Copy } from 'lucide-react';
 import { toast } from 'sonner';
@@ -15,7 +15,12 @@ export default function History() {
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
 
   // Get downloads from hook
-  const { downloads } = useDownloads();
+  const { downloads, loadHistory } = useDownloads();
+
+  // Load history from database on mount
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
 
   // Convert hook data to display format
   const allDownloads = downloads.map(d => ({
@@ -157,8 +162,8 @@ export default function History() {
           <button
             onClick={() => setFilter('all')}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'all'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80'
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted hover:bg-muted/80'
               }`}
           >
             All
@@ -166,8 +171,8 @@ export default function History() {
           <button
             onClick={() => setFilter('completed')}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'completed'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80'
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted hover:bg-muted/80'
               }`}
           >
             Completed
@@ -175,8 +180,8 @@ export default function History() {
           <button
             onClick={() => setFilter('incomplete')}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${filter === 'incomplete'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80'
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted hover:bg-muted/80'
               }`}
           >
             Incomplete
@@ -376,10 +381,10 @@ export default function History() {
                     {/* Progress bar background - solid color */}
                     <div
                       className={`absolute inset-0 ${isCompleted
-                          ? 'bg-green-500/10'
-                          : isIncomplete
-                            ? 'bg-yellow-500/15'
-                            : ''
+                        ? 'bg-green-500/10'
+                        : isIncomplete
+                          ? 'bg-yellow-500/15'
+                          : ''
                         }`}
                       style={
                         isIncomplete && !isCompleted
