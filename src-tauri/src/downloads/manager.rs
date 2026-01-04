@@ -2,6 +2,7 @@
 
 use serde_json::json;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
@@ -18,6 +19,46 @@ use super::workers::run_download;
 use crate::database::Database;
 use crate::downloads::client;
 use crate::settings::{self, config::AppSettings};
+
+/// Resolves destination path conflicts by adding numeric suffix like (1), (2), etc.
+/// Returns the resolved path and potentially modified filename.
+fn resolve_destination_conflict(downloads_dir: &Path, filename: &str) -> (PathBuf, String) {
+    let original_path = downloads_dir.join(filename);
+
+    if !original_path.exists() {
+        return (original_path, filename.to_string());
+    }
+
+    // Split filename into stem and extension
+    let path = Path::new(filename);
+    let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or(filename);
+    let extension = path.extension().and_then(OsStr::to_str);
+
+    // Try incrementing numbers until we find an available filename
+    for i in 1..1000 {
+        let new_filename = match extension {
+            Some(ext) => format!("{} ({}).{}", stem, i, ext),
+            None => format!("{} ({})", stem, i),
+        };
+        let new_path = downloads_dir.join(&new_filename);
+        if !new_path.exists() {
+            return (new_path, new_filename);
+        }
+    }
+
+    // Fallback: use UUID suffix if all numbers exhausted (unlikely)
+    let uuid_suffix = Uuid::now_v7()
+        .to_string()
+        .split('-')
+        .next()
+        .unwrap()
+        .to_string();
+    let new_filename = match extension {
+        Some(ext) => format!("{}_{}.{}", stem, uuid_suffix, ext),
+        None => format!("{}_{}", stem, uuid_suffix),
+    };
+    (downloads_dir.join(&new_filename), new_filename)
+}
 
 /// Control commands for active downloads (from frontend)
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -116,7 +157,10 @@ impl DownloadManager {
             } else {
                 PathBuf::from(&settings.download.download_location)
             };
-            let destination = downloads_dir.join(&filename).to_string_lossy().to_string();
+
+            // Resolve destination conflict (auto-rename if file exists)
+            let (resolved_path, filename) = resolve_destination_conflict(&downloads_dir, &filename);
+            let destination = resolved_path.to_string_lossy().to_string();
 
             // Store to database
             db.insert_download(

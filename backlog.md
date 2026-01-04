@@ -5,8 +5,9 @@
 - [ ] Pop-up window on download complete (open directory / close button)
 - [ ] Pop-up window on DeepLink arrival (wake/show app)
 - [ ] Clipboard paste icon for quick URL input
-- [ ] File conflict dialog (rename/overwrite/skip)
+- [ ] File conflict dialog (rename/overwrite/skip) - Note: auto-rename backend already implemented ✅
 - [ ] Auto-resume notification on startup
+- [ ] Blue range progress bar (IDM-style worker segments showing Fibonacci ranges)
 
 ## Frontend Settings UI
 - [ ] NetworkConfig UI (user agent dropdown: Chrome/Firefox/Edge/Safari/Custom)
