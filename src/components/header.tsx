@@ -66,7 +66,7 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
                 <PanelLeft className="size-5" />
               </Button>
             )}
-            
+
             <button
               onClick={() => {
                 // Check if there are active downloads
@@ -88,12 +88,10 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
               className="flex items-center gap-3 hover:opacity-80 transition-opacity"
             >
               <img src="/icon.png" alt="tur logo" className="w-8 h-8" />
-              <span className="-mb-1.5 text-4xl tracking-tight" style={{ 
-      fontFamily: "'Modak', cursive",
-      WebkitTextStroke: '1.5px',
-      WebkitTextFillColor: 'transparent',
-      letterSpacing: '0.05em'
-    }}>tur</span>
+              <span className="text-5xl tracking-tight" style={{
+                fontFamily: "'Margin', sans-serif",
+                // letterSpacing: '0.01em'
+              }}>tur</span>
             </button>
           </div>
         )}
@@ -178,18 +176,18 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
           )}
 
           <div className="relative" ref={menuRef}>
-            <Button 
-              variant="ghost" 
-              size="icon" 
+            <Button
+              variant="ghost"
+              size="icon"
               aria-label="Menu"
               onClick={() => setMenuOpen(!menuOpen)}
             >
               <Ellipsis className="size-6" />
             </Button>
-            
+
             <AnimatePresence>
               {menuOpen && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, scale: 0.95, y: -10 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95, y: -10 }}
@@ -197,126 +195,126 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
                   className="absolute right-0 mt-2 w-56 bg-popover text-popover-foreground border border-border rounded-md shadow-lg z-[100]"
                 >
                   <div className="py-1">
-                  <button
-                    onClick={() => {
-                      navigate('/settings');
-                      setMenuOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
-                  >
-                    <div className="flex items-center">
-                      <Settings className="mr-2 h-5 w-5" />
-                      Settings
-                    </div>
-                    <span className="text-xs text-muted-foreground font-mono">Ctrl+P</span>
-                  </button>
-
-                  <div 
-                    ref={themeItemRef}
-                    className="relative"
-                    onMouseEnter={() => setThemeSubmenuOpen(true)}
-                    onMouseLeave={() => setThemeSubmenuOpen(false)}
-                  >
-                    <button 
-                      className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
+                    <button
+                      onClick={() => {
+                        navigate('/settings');
+                        setMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
                     >
                       <div className="flex items-center">
-                        <Sun className="mr-2 h-5 w-5" />
-                        Theme
+                        <Settings className="mr-2 h-5 w-5" />
+                        Settings
                       </div>
-                      <ChevronRight className="h-5 w-5" />
+                      <span className="text-xs text-muted-foreground font-mono">Ctrl+P</span>
                     </button>
-                    
-                    <AnimatePresence>
-                      {themeSubmenuOpen && (
-                        <motion.div 
-                          ref={themeSubmenuRef}
-                          initial={{ opacity: 0, x: 10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 10 }}
-                          transition={{ duration: 0.15, ease: "easeOut" }}
-                          className="absolute right-full top-0 mr-1 w-40 bg-popover text-popover-foreground border border-border rounded-md shadow-lg z-[60]"
-                          onMouseEnter={() => setThemeSubmenuOpen(true)}
-                          onMouseLeave={() => setThemeSubmenuOpen(false)}
-                        >
-                          <div className="py-1">
-                          <button
-                            onClick={() => {
-                              setTheme('light');
-                              setMenuOpen(false);
-                              setThemeSubmenuOpen(false);
-                            }}
-                            className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
-                          >
-                            <Sun className="mr-2 h-5 w-5" />
-                            Light
-                          </button>
-                          <button
-                            onClick={() => {
-                              setTheme('dark');
-                              setMenuOpen(false);
-                              setThemeSubmenuOpen(false);
-                            }}
-                            className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
-                          >
-                            <Moon className="mr-2 h-5 w-5" />
-                            Dark
-                          </button>
-                          <button
-                            onClick={() => {
-                              setTheme('system');
-                              setMenuOpen(false);
-                              setThemeSubmenuOpen(false);
-                            }}
-                            className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
-                          >
-                            <Laptop className="mr-2 h-5 w-5" />
-                            System
-                          </button>
+
+                    <div
+                      ref={themeItemRef}
+                      className="relative"
+                      onMouseEnter={() => setThemeSubmenuOpen(true)}
+                      onMouseLeave={() => setThemeSubmenuOpen(false)}
+                    >
+                      <button
+                        className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
+                      >
+                        <div className="flex items-center">
+                          <Sun className="mr-2 h-5 w-5" />
+                          Theme
                         </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
+                        <ChevronRight className="h-5 w-5" />
+                      </button>
 
-                  <button
-                    onClick={() => {
-                      navigate('/about');
-                      setMenuOpen(false);
-                    }}
-                    className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
-                  >
-                    <Info className="mr-2 h-5 w-5" />
-                    About
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      navigate('/donate');
-                      setMenuOpen(false);
-                    }}
-                    className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
-                  >
-                    <Heart className="mr-2 h-5 w-5" />
-                    Donate
-                  </button>
-
-                  <div className="border-t border-border my-1"></div>
-
-                  <button
-                    onClick={() => {
-                      handleQuit();
-                      setMenuOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-destructive hover:bg-destructive/10 rounded-sm"
-                  >
-                    <div className="flex items-center">
-                      <LogOut className="mr-2 h-5 w-5" />
-                      Quit
+                      <AnimatePresence>
+                        {themeSubmenuOpen && (
+                          <motion.div
+                            ref={themeSubmenuRef}
+                            initial={{ opacity: 0, x: 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 10 }}
+                            transition={{ duration: 0.15, ease: "easeOut" }}
+                            className="absolute right-full top-0 mr-1 w-40 bg-popover text-popover-foreground border border-border rounded-md shadow-lg z-[60]"
+                            onMouseEnter={() => setThemeSubmenuOpen(true)}
+                            onMouseLeave={() => setThemeSubmenuOpen(false)}
+                          >
+                            <div className="py-1">
+                              <button
+                                onClick={() => {
+                                  setTheme('light');
+                                  setMenuOpen(false);
+                                  setThemeSubmenuOpen(false);
+                                }}
+                                className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
+                              >
+                                <Sun className="mr-2 h-5 w-5" />
+                                Light
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setTheme('dark');
+                                  setMenuOpen(false);
+                                  setThemeSubmenuOpen(false);
+                                }}
+                                className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
+                              >
+                                <Moon className="mr-2 h-5 w-5" />
+                                Dark
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setTheme('system');
+                                  setMenuOpen(false);
+                                  setThemeSubmenuOpen(false);
+                                }}
+                                className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm transition-colors"
+                              >
+                                <Laptop className="mr-2 h-5 w-5" />
+                                System
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
-                    <span className="text-xs text-muted-foreground font-mono">Ctrl+Q</span>
-                  </button>
-                </div>
+
+                    <button
+                      onClick={() => {
+                        navigate('/about');
+                        setMenuOpen(false);
+                      }}
+                      className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
+                    >
+                      <Info className="mr-2 h-5 w-5" />
+                      About
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        navigate('/donate');
+                        setMenuOpen(false);
+                      }}
+                      className="w-full flex items-center px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
+                    >
+                      <Heart className="mr-2 h-5 w-5" />
+                      Donate
+                    </button>
+
+                    <div className="border-t border-border my-1"></div>
+
+                    <button
+                      onClick={() => {
+                        handleQuit();
+                        setMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-sm text-destructive hover:bg-destructive/10 rounded-sm"
+                    >
+                      <div className="flex items-center">
+                        <LogOut className="mr-2 h-5 w-5" />
+                        Quit
+                      </div>
+                      <span className="text-xs text-muted-foreground font-mono">Ctrl+Q</span>
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>

@@ -188,14 +188,12 @@ export default function Home() {
         >
           {/* Logo + Name at Top - Golden Ratio Sizing */}
           <div className="flex items-center justify-center gap-3 mb-4">
-            <img src="/icon.png" alt="tur logo" className="mb-2.5 w-[54px] h-[54px]" />
+            <img src="/icon.png" alt="tur logo" className="w-[54px] h-[54px]" />
             <h1
-              className="text-5xl"
+              className="text-7xl tracking-tight"
               style={{
-                fontFamily: "'Modak', cursive",
-                WebkitTextStroke: '1.5px',
-                WebkitTextFillColor: 'transparent',
-                letterSpacing: '0.05em'
+                fontFamily: "'Margin', sans-serif",
+                // letterSpacing: '0.05em'
               }}
             >
               tur

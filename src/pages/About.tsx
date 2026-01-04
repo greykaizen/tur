@@ -11,7 +11,13 @@ export default function About() {
           <div className="flex flex-col items-center space-y-2 p-3 rounded-lg border border-border bg-card">
             <div className="flex items-center gap-2">
               <img src="/icon.png" alt="tur logo" className="w-10 h-10" />
-              <h1 className="text-xl font-bold tracking-tight">tur</h1>
+              <h1
+                className="text-5xl"
+                style={{
+                  fontFamily: "'Margin', sans-serif",
+                  // letterSpacing: '0.05em'
+                }}
+              >tur</h1>
             </div>
             <p className="text-xs text-muted-foreground text-center">
               A modern, fast, and beautiful download manager
