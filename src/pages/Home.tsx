@@ -1,17 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
 import { Paperclip, Download, X, Play, Pause, FolderOpen } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useDownloadSelection } from '@/contexts/DownloadSelectionContext';
 import { useDownloads, formatSize, formatSpeed, formatTimeLeft } from '@/hooks/useDownloads';
 
 export default function Home() {
-  const location = useLocation();
-
-  // Selected download ID - can come from location state or be set when starting downloads
-  const [selectedDownloadId, setSelectedDownloadId] = useState<string | null>(
-    location.state?.download?.id || null
-  );
+  // Get selected download state from context (single source of truth)
+  const { selectedDownload, setSelectedDownloadId, showWelcomeScreen } = useDownloadSelection();
 
   // Empty state input handling
   const [urlTags, setUrlTags] = useState<string[]>([]);
@@ -24,37 +20,13 @@ export default function Home() {
   const showDownloadProgress = ready ? settings.app.show_download_progress : true;
   const showSegmentProgress = ready ? settings.app.show_segment_progress : true;
 
-  // Get real downloads data from hook
+  // Get downloads for actions (startDownloads, pauseDownload, cancelDownload)
   const { downloads, startDownloads, pauseDownload, cancelDownload } = useDownloads();
 
-  // Get selected download from hook (real-time data)
-  const selectedDownload = selectedDownloadId
-    ? downloads.find(d => d.id === selectedDownloadId)
-    : null;
-
-  // Listen for select-download event from sidebar
+  // Focus input in empty state
   useEffect(() => {
-    const handleSelectDownload = (e: CustomEvent<{ id: string }>) => {
-      setSelectedDownloadId(e.detail.id);
-    };
-    window.addEventListener('select-download', handleSelectDownload as EventListener);
-    return () => {
-      window.removeEventListener('select-download', handleSelectDownload as EventListener);
-    };
-  }, []);
-
-  // Notify Layout about empty state - MUST be outside conditional
-  useEffect(() => {
-    if (!selectedDownload) {
-      window.dispatchEvent(new CustomEvent('home-empty-state', { detail: { isEmpty: true } }));
-      if (inputRef.current) {
-        inputRef.current.focus();
-      }
-      return () => {
-        window.dispatchEvent(new CustomEvent('home-empty-state', { detail: { isEmpty: false } }));
-      };
-    } else {
-      window.dispatchEvent(new CustomEvent('home-empty-state', { detail: { isEmpty: false } }));
+    if (!selectedDownload && inputRef.current) {
+      inputRef.current.focus();
     }
   }, [selectedDownload]);
 
@@ -155,116 +127,128 @@ export default function Home() {
     setUrlTags([]);
     setInputValue('');
 
-    // Set selected to first download after a brief delay for backend to respond
-    setTimeout(() => {
-      const firstDownload = downloads.length > 0 ? downloads[downloads.length - 1] : null;
-      if (firstDownload) {
-        setSelectedDownloadId(firstDownload.id);
-      }
-    }, 500);
+    // Context will auto-select first active download when downloads update
   };
-
-  // Effect to auto-select first download when downloads change and none selected
-  useEffect(() => {
-    if (!selectedDownloadId && downloads.length > 0) {
-      // Select the most recently added download
-      const activeDownload = downloads.find(d => d.status === 'downloading' || d.status === 'queued');
-      if (activeDownload) {
-        setSelectedDownloadId(activeDownload.id);
-      }
-    }
-  }, [downloads, selectedDownloadId]);
 
   // Empty State - No download selected
   if (!selectedDownload) {
+    // Welcome Screen - First launch, fancy UI with logo and input
+    if (showWelcomeScreen) {
+      return (
+        <PageTransition className="h-full w-full overflow-hidden relative">
+          {/* Content */}
+          <div
+            className="relative h-full flex flex-col px-4 pt-8"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* Logo + Name at Top - Golden Ratio Sizing */}
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <img src="/icon.png" alt="tur logo" className="w-[54px] h-[54px]" />
+              <h1
+                className="text-7xl tracking-tight"
+                style={{
+                  fontFamily: "'Margin', sans-serif",
+                }}
+              >
+                tur
+              </h1>
+            </div>
+
+            {/* Input Field - Right below logo */}
+            <div className="w-full max-w-md mx-auto">
+              <div className={`transition-all ${isDragging ? 'scale-105' : ''}`}>
+                <div className={`bg-card/80 backdrop-blur-sm border-2 rounded-xl shadow-xl transition-all ${isDragging ? 'border-blue-500' : 'border-border'}`}>
+                  <div className="flex items-start gap-2 px-3 py-2">
+                    {/* Tag input field */}
+                    <div className="flex-1 min-w-0 max-h-[60px] overflow-y-auto">
+                      <div className="flex flex-wrap gap-1.5 items-center">
+                        {/* URL Tags */}
+                        {urlTags.map((url, index) => (
+                          <div
+                            key={index}
+                            className="inline-flex items-center gap-1 bg-blue-600/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-md text-xs"
+                          >
+                            <span className="max-w-[180px] truncate">{url}</span>
+                            <button
+                              onClick={() => removeTag(index)}
+                              className="hover:bg-blue-600/20 rounded-sm p-0.5"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </div>
+                        ))}
+
+                        {/* Input field */}
+                        <input
+                          ref={inputRef}
+                          type="text"
+                          value={inputValue}
+                          onChange={handleInputChange}
+                          onKeyDown={handleKeyDown}
+                          placeholder={urlTags.length === 0 ? "Enter URL or drag & drop file" : ""}
+                          className="flex-1 min-w-[100px] bg-transparent text-sm focus:outline-none py-1"
+                        />
+                      </div>
+                    </div>
+
+                    {/* File browser button */}
+                    <button
+                      onClick={handleFileSelect}
+                      className="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
+                      title="Browse File"
+                    >
+                      <Paperclip className="h-4 w-4 text-muted-foreground" />
+                    </button>
+
+                    {/* Download button */}
+                    <button
+                      onClick={handleDownload}
+                      disabled={urlTags.length === 0 && !inputValue.trim()}
+                      className="p-1.5 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                      title="Download"
+                    >
+                      <Download className="h-4 w-4 text-white" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Helper text */}
+                <p className="text-center text-xs text-muted-foreground mt-3">
+                  Paste URLs separated by commas or press Enter after each URL
+                </p>
+              </div>
+            </div>
+
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.csv"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </div>
+        </PageTransition>
+      );
+    }
+
+    // In-App Empty State - Simple wireframe style
     return (
       <PageTransition className="h-full w-full overflow-hidden relative">
-        {/* Content */}
         <div
-          className="relative h-full flex flex-col px-4 pt-8"
+          className="relative h-full flex flex-col items-center pt-5 p-4"
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {/* Logo + Name at Top - Golden Ratio Sizing */}
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <img src="/icon.png" alt="tur logo" className="w-[54px] h-[54px]" />
-            <h1
-              className="text-7xl tracking-tight"
-              style={{
-                fontFamily: "'Margin', sans-serif",
-                // letterSpacing: '0.05em'
-              }}
-            >
-              tur
-            </h1>
-          </div>
-
-          {/* Input Field - Right below logo */}
-          <div className="w-full max-w-md mx-auto">
-            <div className={`transition-all ${isDragging ? 'scale-105' : ''
-              }`}>
-              <div className={`bg-card/80 backdrop-blur-sm border-2 rounded-xl shadow-xl transition-all ${isDragging ? 'border-blue-500' : 'border-border'
-                }`}>
-                <div className="flex items-start gap-2 px-3 py-2">
-                  {/* Tag input field */}
-                  <div className="flex-1 min-w-0 max-h-[60px] overflow-y-auto">
-                    <div className="flex flex-wrap gap-1.5 items-center">
-                      {/* URL Tags */}
-                      {urlTags.map((url, index) => (
-                        <div
-                          key={index}
-                          className="inline-flex items-center gap-1 bg-blue-600/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-md text-xs"
-                        >
-                          <span className="max-w-[180px] truncate">{url}</span>
-                          <button
-                            onClick={() => removeTag(index)}
-                            className="hover:bg-blue-600/20 rounded-sm p-0.5"
-                          >
-                            <X className="h-2.5 w-2.5" />
-                          </button>
-                        </div>
-                      ))}
-
-                      {/* Input field */}
-                      <input
-                        ref={inputRef}
-                        type="text"
-                        value={inputValue}
-                        onChange={handleInputChange}
-                        onKeyDown={handleKeyDown}
-                        placeholder={urlTags.length === 0 ? "Enter URL or drag & drop file" : ""}
-                        className="flex-1 min-w-[100px] bg-transparent text-sm focus:outline-none py-1"
-                      />
-                    </div>
-                  </div>
-
-                  {/* File browser button */}
-                  <button
-                    onClick={handleFileSelect}
-                    className="p-1.5 hover:bg-muted rounded-md transition-colors shrink-0"
-                    title="Browse File"
-                  >
-                    <Paperclip className="h-4 w-4 text-muted-foreground" />
-                  </button>
-
-                  {/* Download button */}
-                  <button
-                    onClick={handleDownload}
-                    disabled={urlTags.length === 0 && !inputValue.trim()}
-                    className="p-1.5 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
-                    title="Download"
-                  >
-                    <Download className="h-4 w-4 text-white" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Helper text */}
-              <p className="text-center text-xs text-muted-foreground mt-3">
-                Paste URLs separated by commas or press Enter after each URL
-              </p>
-            </div>
+          <div className={`text-center transition-all ${isDragging ? 'scale-105' : ''}`}>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              Start a New Download by<br />
+              clicking on Add button<br />
+              or drag & drop a file here
+            </p>
           </div>
 
           {/* Hidden file input */}

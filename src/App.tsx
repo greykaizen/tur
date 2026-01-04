@@ -1,8 +1,9 @@
 import { ThemeProvider } from "@/components/theme-provider"
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { SettingsProvider, useSettings } from '@/contexts/SettingsContext';
+import { DownloadSelectionProvider, useDownloadSelection } from '@/contexts/DownloadSelectionContext';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Settings from '@/pages/Settings';
@@ -13,7 +14,7 @@ import Donate from '@/pages/Donate';
 
 function AnimatedRoutes() {
   const location = useLocation();
-  
+
   return (
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
@@ -31,17 +32,7 @@ function AnimatedRoutes() {
 function AppContent() {
   const navigate = useNavigate();
   const { settings, ready } = useSettings();
-  const [isHomeEmptyState, setIsHomeEmptyState] = useState(false);
-
-  // Listen for home empty state changes
-  useEffect(() => {
-    const handleHomeEmptyState = (e: CustomEvent) => {
-      setIsHomeEmptyState(e.detail.isEmpty);
-    };
-
-    window.addEventListener('home-empty-state', handleHomeEmptyState as EventListener);
-    return () => window.removeEventListener('home-empty-state', handleHomeEmptyState as EventListener);
-  }, []);
+  const { isEmptyState } = useDownloadSelection();
 
   useEffect(() => {
     if (!ready) return;
@@ -94,7 +85,7 @@ function AppContent() {
         navigate('/history');
       } else if (matchesShortcut(toggleSidebar)) {
         // Don't toggle sidebar when in home empty state
-        if (!isHomeEmptyState) {
+        if (!isEmptyState) {
           e.preventDefault();
           window.dispatchEvent(new CustomEvent('toggle-sidebar'));
         }
@@ -103,6 +94,7 @@ function AppContent() {
         window.dispatchEvent(new CustomEvent('cancel-download'));
       } else if (matchesShortcut(quitApp)) {
         e.preventDefault();
+        console.log('Quit shortcut triggered');
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().close();
       }
@@ -110,7 +102,7 @@ function AppContent() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, settings, ready, isHomeEmptyState]);
+  }, [navigate, settings, ready, isEmptyState]);
 
   return (
     <Layout>
@@ -124,7 +116,9 @@ export default function App() {
     <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
       <SettingsProvider>
         <BrowserRouter>
-          <AppContent />
+          <DownloadSelectionProvider>
+            <AppContent />
+          </DownloadSelectionProvider>
         </BrowserRouter>
       </SettingsProvider>
     </ThemeProvider>

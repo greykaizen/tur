@@ -107,6 +107,7 @@ fn update_app_field(
         "button_label" => config.button_label = value.as_str().unwrap_or("both").to_string(),
         "show_download_progress" => config.show_download_progress = value.as_bool().unwrap_or(true),
         "show_segment_progress" => config.show_segment_progress = value.as_bool().unwrap_or(true),
+        "show_welcome_screen" => config.show_welcome_screen = value.as_bool().unwrap_or(true),
         "autostart" => config.autostart = value.as_bool().unwrap_or(false),
         "auto_resume" => config.auto_resume = value.as_bool().unwrap_or(false),
         _ => return Err(format!("Unknown app field: {}", field)),

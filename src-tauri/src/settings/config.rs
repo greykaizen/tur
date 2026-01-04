@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub button_label: String,
     pub show_download_progress: bool,
     pub show_segment_progress: bool,
+    pub show_welcome_screen: bool,
     pub autostart: bool,
     /// Resume incomplete downloads when app starts
     pub auto_resume: bool,
@@ -134,6 +135,7 @@ impl Default for AppConfig {
             button_label: "both".into(),
             show_download_progress: true,
             show_segment_progress: true,
+            show_welcome_screen: true,
             autostart: false,
             auto_resume: false,
         }

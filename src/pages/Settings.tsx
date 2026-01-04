@@ -79,7 +79,7 @@ export default function Settings() {
       <div className="h-full w-full overflow-y-auto p-6">
         <div className="max-w-3xl mx-auto space-y-6">
           {/* <h1 className="text-2xl font-bold">Settings</h1> */}
-          
+
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full relative z-0">
             <div className="w-full overflow-x-auto">
               <TabsList className="inline-flex w-full min-w-max">
@@ -143,21 +143,19 @@ export default function Settings() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => set('app.sidebar', 'left')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          settings.app.sidebar === 'left'
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.sidebar === 'left'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted hover:bg-muted/80'
-                        }`}
+                          }`}
                       >
                         Left
                       </button>
                       <button
                         onClick={() => set('app.sidebar', 'right')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          settings.app.sidebar === 'right'
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.sidebar === 'right'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted hover:bg-muted/80'
-                        }`}
+                          }`}
                       >
                         Right
                       </button>
@@ -173,31 +171,28 @@ export default function Settings() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => set('app.button_label', 'text')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          settings.app.button_label === 'text'
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'text'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted hover:bg-muted/80'
-                        }`}
+                          }`}
                       >
                         Text
                       </button>
                       <button
                         onClick={() => set('app.button_label', 'icon')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          settings.app.button_label === 'icon'
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'icon'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted hover:bg-muted/80'
-                        }`}
+                          }`}
                       >
                         Icon
                       </button>
                       <button
                         onClick={() => set('app.button_label', 'both')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          settings.app.button_label === 'both'
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'both'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted hover:bg-muted/80'
-                        }`}
+                          }`}
                       >
                         Both
                       </button>
@@ -227,6 +222,18 @@ export default function Settings() {
                       onCheckedChange={(checked) => set('app.show_segment_progress', checked)}
                     />
                   </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Show Welcome Screen</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Display animated welcome screen on app launch
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.app.show_welcome_screen}
+                      onCheckedChange={(checked) => set('app.show_welcome_screen', checked)}
+                    />
+                  </div>
                 </div>
               </div>
             </TabsContent>
@@ -246,9 +253,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('go_home')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'go_home' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'go_home' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'go_home' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'go_home' ? 'Press keys...' : settings.shortcuts.go_home}
@@ -262,9 +268,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('open_settings')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'open_settings' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'open_settings' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'open_settings' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_settings' ? 'Press keys...' : settings.shortcuts.open_settings}
@@ -278,9 +283,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('add_download')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'add_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'add_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'add_download' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'add_download' ? 'Press keys...' : settings.shortcuts.add_download}
@@ -294,9 +298,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('open_details')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'open_details' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'open_details' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'open_details' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_details' ? 'Press keys...' : settings.shortcuts.open_details}
@@ -310,9 +313,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('open_history')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'open_history' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'open_history' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'open_history' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'open_history' ? 'Press keys...' : settings.shortcuts.open_history}
@@ -326,9 +328,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('toggle_sidebar')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'toggle_sidebar' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'toggle_sidebar' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'toggle_sidebar' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'toggle_sidebar' ? 'Press keys...' : settings.shortcuts.toggle_sidebar}
@@ -342,9 +343,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('cancel_download')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'cancel_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'cancel_download' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'cancel_download' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'cancel_download' ? 'Press keys...' : settings.shortcuts.cancel_download}
@@ -358,9 +358,8 @@ export default function Settings() {
                     </div>
                     <button
                       onClick={() => setEditingShortcut('quit_app')}
-                      className={`px-3 py-1.5 rounded-md transition-colors ${
-                        editingShortcut === 'quit_app' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md transition-colors ${editingShortcut === 'quit_app' ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
+                        }`}
                     >
                       <code className="text-sm font-mono">
                         {editingShortcut === 'quit_app' && recordedKeys.length > 0 ? recordedKeys.join('+') : editingShortcut === 'quit_app' ? 'Press keys...' : settings.shortcuts.quit_app}

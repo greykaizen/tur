@@ -10,6 +10,7 @@ export type AppSettings = {
         button_label: 'text' | 'icon' | 'both';
         show_download_progress: boolean;
         show_segment_progress: boolean;
+        show_welcome_screen: boolean;
         autostart: boolean;
     };
     shortcuts: {
@@ -50,6 +51,7 @@ const DEFAULT_SETTINGS: AppSettings = {
         button_label: 'both',
         show_download_progress: true,
         show_segment_progress: true,
+        show_welcome_screen: true,
         autostart: false,
     },
     shortcuts: {
@@ -140,22 +142,22 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     const set = useCallback(async (path: string, value: unknown) => {
         try {
             await invoke('update_setting', { key: path, value });
-            
+
             const parts = path.split('.');
             const updated = structuredClone(settings);
             let node = updated as Record<string, unknown>;
-            
+
             for (let i = 0; i < parts.length - 1; i++) {
                 node = node[parts[i]] as Record<string, unknown>;
             }
             node[parts[parts.length - 1]] = value;
-            
+
             setSettings(updated);
-            
+
             if (path.startsWith('app.')) {
                 cacheUISettings(updated.app);
             }
-            
+
             if (path === 'app.autostart') {
                 await invoke('set_autostart', { enabled: value });
             }
