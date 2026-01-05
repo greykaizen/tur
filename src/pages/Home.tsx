@@ -293,7 +293,17 @@ export default function Home() {
                 <span className="text-foreground">{formatSpeed(selectedDownload.speed)}</span>
 
                 <span className="font-medium text-muted-foreground">Time Left:</span>
-                <span className="text-foreground">{formatTimeLeft(selectedDownload.downloaded, selectedDownload.size || 0, selectedDownload.speed)}</span>
+                <span className="text-foreground">{formatTimeLeft(selectedDownload.downloaded, selectedDownload.size || 0, selectedDownload.speed, selectedDownload.id)}</span>
+
+                <span className="font-medium text-muted-foreground">Connections:</span>
+                <span className="text-foreground">
+                  {selectedDownload.num_connections > 1 ? `${selectedDownload.num_connections} threads` : 'Single'}
+                </span>
+
+                <span className="font-medium text-muted-foreground">Resume:</span>
+                <span className={selectedDownload.resume_supported ? "text-foreground" : "text-red-400/70"}>
+                  {selectedDownload.resume_supported ? 'Yes' : 'No'}
+                </span>
               </div>
             </div>
 

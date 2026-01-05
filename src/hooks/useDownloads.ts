@@ -17,6 +17,7 @@ export interface DownloadInfo {
     status: 'queued' | 'downloading' | 'paused' | 'completed' | 'failed';
     destination: string;
     resume_supported: boolean;
+    num_connections: number;
     segments?: { start: number; end: number }[];
     error?: string;
 }
@@ -38,6 +39,7 @@ interface QueueEvent {
     size: number | null;
     destination: string;
     resume_supported: boolean;
+    num_connections: number;
     status: string;
 }
 
@@ -65,6 +67,7 @@ export function useDownloads() {
                     status: 'queued',
                     destination: dl.destination,
                     resume_supported: dl.resume_supported,
+                    num_connections: dl.num_connections,
                 });
                 return next;
             });
@@ -82,13 +85,14 @@ export function useDownloads() {
             });
         }).then(fn => unlistenFns.push(fn));
 
-        // Progress update event
+        // Progress update event - backend sends pre-smoothed speed
         listen<ProgressEvent>('download_progress', (event) => {
             const p = event.payload;
             setDownloads(prev => {
                 const next = new Map(prev);
                 const dl = next.get(p.id);
                 if (dl) {
+                    // Speed is already EWMA-smoothed by backend
                     next.set(dl.id, {
                         ...dl,
                         downloaded: p.downloaded,
@@ -223,6 +227,7 @@ export function useDownloads() {
                             status: (item.status as DownloadInfo['status']) || 'queued',
                             destination: item.destination,
                             resume_supported: item.accept_ranges,
+                            num_connections: item.accept_ranges ? 8 : 1, // Default, actual value not stored in history
                         });
                     }
                 }
@@ -265,16 +270,68 @@ export function formatSpeed(bytesPerSec: number): string {
     return `${formatSize(bytesPerSec)}/s`;
 }
 
-// Format time remaining
-export function formatTimeLeft(downloaded: number, total: number, speed: number): string {
-    if (speed === 0 || total === 0) return '--:--';
+// ETA throttling state - prevents jittery time-left display
+const etaState = new Map<string, { lastEta: number; lastUpdate: number }>();
+const ETA_UPDATE_INTERVAL_MS = 1000; // Update ETA at most once per second
+const ETA_MAX_INCREASE_FACTOR = 2.0; // Cap upward jumps to 2x previous ETA
+
+// Format time remaining - IDM style with throttling
+// id parameter allows per-download ETA throttling
+export function formatTimeLeft(downloaded: number, total: number, speed: number, id?: string): string {
+    if (speed === 0 || total === 0) return '--';
+
     const remaining = total - downloaded;
-    const seconds = Math.ceil(remaining / speed);
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins > 60) {
-        const hours = Math.floor(mins / 60);
-        return `${hours}h ${mins % 60}m`;
+    let totalSeconds = Math.ceil(remaining / speed);
+
+    // Apply throttling if we have an ID
+    if (id) {
+        const now = Date.now();
+        let state = etaState.get(id);
+
+        // If completed, clear state
+        if (downloaded >= total) {
+            etaState.delete(id);
+        } else {
+            if (!state) {
+                // First time
+                state = { lastEta: totalSeconds, lastUpdate: now };
+                etaState.set(id, state);
+            } else if (now - state.lastUpdate >= ETA_UPDATE_INTERVAL_MS) {
+                // Enough time passed for update
+                let newEta = totalSeconds;
+                // Cap upward jumps
+                if (state.lastEta > 0 && totalSeconds > state.lastEta * ETA_MAX_INCREASE_FACTOR) {
+                    newEta = Math.ceil(state.lastEta * ETA_MAX_INCREASE_FACTOR);
+                }
+                state.lastEta = newEta;
+                state.lastUpdate = now;
+                etaState.set(id, state);
+                totalSeconds = newEta;
+            } else {
+                // Use cached ETA
+                totalSeconds = state.lastEta;
+            }
+        }
     }
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+
+    if (totalSeconds < 0) return '--';
+
+    const hours = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+
+    if (hours > 0) {
+        // "1 hr 5 min" or "2 hrs 30 min"
+        return `${hours} hr${hours > 1 ? 's' : ''} ${mins} min`;
+    } else if (mins > 0) {
+        // "5 min 35 sec" or "12 min 0 sec"
+        return `${mins} min ${secs} sec`;
+    } else {
+        // "45 sec"
+        return `${secs} sec`;
+    }
+}
+
+export function clearEtaState(id: string) {
+    etaState.delete(id);
 }
