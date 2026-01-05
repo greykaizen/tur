@@ -94,7 +94,8 @@ pub fn run_download<R: tauri::Runtime>(
     handles
 }
 
-/// Spawn progress emitter task
+/// Production-quality progress emitter with variance-adaptive EWMA
+/// Works correctly for fast fiber, slow mobile, and laggy VPN connections
 fn spawn_progress_emitter<R: tauri::Runtime>(
     id: Uuid,
     destination: String,
@@ -105,23 +106,104 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
     tokio::spawn(async move {
         use std::time::Instant;
 
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        // Configuration
+        const EMIT_INTERVAL_MS: u64 = 250;
+        const WARM_UP_SAMPLES: usize = 3; // Collect samples before showing speed
+        const STALL_HOLD_MS: u64 = 800; // Hold speed during brief stalls
+        const STALL_DECAY: f64 = 0.85; // Decay rate per tick during extended stalls
+
+        // EWMA bounds - variance controls alpha within this range
+        const ALPHA_MIN: f64 = 0.15; // Very smooth when unstable
+        const ALPHA_MAX: f64 = 0.45; // Responsive when stable
+
+        let mut interval = tokio::time::interval(Duration::from_millis(EMIT_INTERVAL_MS));
+
+        // State
         let mut last_bytes = 0usize;
-        let start_time = Instant::now();
+        let mut smoothed_speed: f64 = 0.0;
+        let mut stall_start: Option<Instant> = None;
+        let mut last_tick = Instant::now();
+
+        // Variance tracking (ring buffer of last N speed samples)
+        let mut speed_history: [f64; 5] = [0.0; 5];
+        let mut history_idx = 0usize;
+        let mut sample_count = 0usize;
 
         loop {
             interval.tick().await;
 
             let downloaded = bytes_downloaded.load(Ordering::Relaxed);
-            let elapsed = start_time.elapsed().as_secs_f64();
+            let now = Instant::now();
+            let byte_delta = downloaded.saturating_sub(last_bytes);
 
-            // Speed calculation: bytes since last update × 10 (since interval is 100ms)
-            let speed = if elapsed > 0.0 {
-                ((downloaded.saturating_sub(last_bytes)) as f64 * 10.0) as usize
+            // Use actual elapsed time since last tick for accurate speed
+            let elapsed_secs = last_tick.elapsed().as_secs_f64();
+            last_tick = now;
+
+            if byte_delta > 0 && elapsed_secs > 0.05 {
+                // We received bytes - calculate speed from this interval
+                let raw_speed = byte_delta as f64 / elapsed_secs;
+
+                // Update history for variance calculation
+                speed_history[history_idx] = raw_speed;
+                history_idx = (history_idx + 1) % speed_history.len();
+                sample_count = (sample_count + 1).min(speed_history.len());
+
+                // Calculate variance-adaptive alpha
+                let alpha = if sample_count >= 2 {
+                    let mean: f64 =
+                        speed_history[..sample_count].iter().sum::<f64>() / sample_count as f64;
+                    let variance: f64 = speed_history[..sample_count]
+                        .iter()
+                        .map(|s| (s - mean).powi(2))
+                        .sum::<f64>()
+                        / sample_count as f64;
+
+                    // Coefficient of variation (normalized variance)
+                    let cv = if mean > 0.0 {
+                        variance.sqrt() / mean
+                    } else {
+                        0.0
+                    };
+
+                    // High CV (unstable) → low alpha (smooth)
+                    // Low CV (stable) → high alpha (responsive)
+                    let cv_clamped = cv.clamp(0.0, 1.0);
+                    ALPHA_MAX - (cv_clamped * (ALPHA_MAX - ALPHA_MIN))
+                } else {
+                    0.35 // Default alpha during warm-up
+                };
+
+                // Apply EWMA - no clamping, just smooth transition
+                if sample_count <= 1 {
+                    smoothed_speed = raw_speed;
+                } else {
+                    smoothed_speed = alpha * raw_speed + (1.0 - alpha) * smoothed_speed;
+                }
+
+                // Reset stall tracking
+                last_bytes = downloaded;
+                stall_start = None;
             } else {
-                0
+                // No new bytes - handle stall
+                let stall_duration = stall_start.get_or_insert(now).elapsed().as_millis() as u64;
+
+                if stall_duration > STALL_HOLD_MS {
+                    // Extended stall: decay speed
+                    smoothed_speed *= STALL_DECAY;
+                    if smoothed_speed < 100.0 {
+                        smoothed_speed = 0.0;
+                    }
+                }
+                // Brief stall: hold current speed (do nothing)
+            }
+
+            // Calculate display values
+            let display_speed = if sample_count >= WARM_UP_SAMPLES {
+                smoothed_speed as usize
+            } else {
+                0 // Don't show speed until we have enough samples
             };
-            last_bytes = downloaded;
 
             let percentage = if total_size > 0 {
                 (downloaded as f64 / total_size as f64) * 100.0
@@ -129,23 +211,18 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
                 0.0
             };
 
-            let time_left = if speed > 0 {
-                (total_size.saturating_sub(downloaded)) / speed
-            } else {
-                0
-            };
-
+            // Emit progress
             let _ = handle.emit(
                 "download_progress",
                 serde_json::json!({
                     "id": id.to_string(),
                     "downloaded": downloaded,
                     "progress": percentage,
-                    "speed": speed,
-                    "time_left": time_left,
+                    "speed": display_speed,
                 }),
             );
 
+            // Check completion
             if downloaded >= total_size && total_size > 0 {
                 if let Ok(db) = crate::database::Database::initialize(&handle) {
                     let _ = db.mark_completed(&id);
