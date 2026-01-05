@@ -1,5 +1,6 @@
 import PageTransition from '@/components/PageTransition';
 import { Github as GithubIcon, Globe, Mail, Heart } from 'lucide-react';
+import { version } from '../../package.json';
 
 export default function About() {
   return (
@@ -23,7 +24,7 @@ export default function About() {
               A modern, fast, and beautiful download manager
             </p>
             <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-              <span>Version 1.0.0</span>
+              <span>Version {version}</span>
               <span>•</span>
               <span className="text-green-500">Up to date</span>
             </div>
