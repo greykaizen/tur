@@ -1,14 +1,14 @@
 use serde_json::json;
 
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
 
-// use crate::download_manager::DownloadManager;
 pub mod args;
 pub mod database;
 pub mod downloads;
 pub mod settings;
+pub mod tray;
 
 pub fn run() {
     tauri::Builder::default()
@@ -35,7 +35,7 @@ pub fn run() {
                 }
             }
 
-            // Show window unless minimized
+            // Show window unless minimized - this wakes app from background
             if let Some(window) = app.get_webview_window("main") {
                 if !parsed_args.minimized {
                     let _ = window.show();
@@ -57,11 +57,30 @@ pub fn run() {
             downloads::manager::is_download_active,
             downloads::manager::active_download_count,
             downloads::manager::get_download_history,
+            downloads::manager::request_shutdown,
         ])
+        .on_window_event(|window, event| {
+            // Handle window close request based on settings
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let should_prevent = tray::handle_close_requested(app);
+
+                if should_prevent {
+                    // Prevent actual close, window is hidden
+                    api.prevent_close();
+                }
+                // If not prevented, the app will exit
+            }
+        })
         .setup(|app| {
             // Initialize and manage DownloadManager
             let download_manager = downloads::DownloadManager::new();
             app.manage(download_manager);
+
+            // Set up system tray based on settings
+            if let Err(e) = tray::setup_tray(app.handle()) {
+                eprintln!("Warning: Failed to set up system tray: {}", e);
+            }
 
             // Parse command line arguments
             let args = args::AppArgs::parse();
