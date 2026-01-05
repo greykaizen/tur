@@ -25,8 +25,8 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
   const themeSubmenuRef = useRef<HTMLDivElement>(null);
 
   const handleQuit = async () => {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().close();
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('request_shutdown');
   };
 
   // Close menu when clicking outside

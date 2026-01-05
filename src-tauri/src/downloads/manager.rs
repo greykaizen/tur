@@ -183,6 +183,11 @@ impl DownloadManager {
 
             // Emit to frontend
             println!("  📡 Emitting queue_download event for: {}", filename);
+            let num_connections = if resume_supported {
+                settings.download.num_threads
+            } else {
+                1
+            };
             let _ = app.emit(
                 "queue_download",
                 json!({
@@ -192,6 +197,7 @@ impl DownloadManager {
                     "size": size,
                     "destination": destination,
                     "resume_supported": resume_supported,
+                    "num_connections": num_connections,
                     "status": "queued",
                 }),
             );
@@ -278,6 +284,11 @@ impl DownloadManager {
                 let _ = db.update_progress(&download.id, current_file_size);
             }
 
+            let num_connections = if resume_supported {
+                settings.download.num_threads
+            } else {
+                1
+            };
             let _ = app.emit(
                 "queue_download",
                 json!({
@@ -285,7 +296,10 @@ impl DownloadManager {
                     "url": download.url,
                     "filename": download.filename,
                     "size": server_size,
+                    "destination": download.destination,
                     "bytes_received": if needs_restart { 0 } else { current_file_size },
+                    "resume_supported": resume_supported,
+                    "num_connections": num_connections,
                     "status": "resuming",
                 }),
             );
@@ -467,4 +481,22 @@ pub fn active_download_count(manager: tauri::State<'_, DownloadManager>) -> usiz
 pub fn get_download_history(app: AppHandle) -> Result<Vec<crate::database::Download>, String> {
     let db = crate::database::Database::initialize(&app).map_err(|e| e.to_string())?;
     db.get_downloads().map_err(|e| e.to_string())
+}
+
+/// Tauri command for graceful shutdown - stops all downloads and exits
+#[tauri::command]
+pub async fn request_shutdown(
+    app: AppHandle,
+    manager: tauri::State<'_, DownloadManager>,
+) -> Result<(), String> {
+    // 1. Stop all active downloads
+    manager.shutdown_all();
+
+    // 2. TODO: Save download state to metadata files for resume on next launch
+    // This will be implemented with the .tur.meta file system
+
+    // 3. Exit the application completely (bypasses window close event handler)
+    app.exit(0);
+
+    Ok(())
 }

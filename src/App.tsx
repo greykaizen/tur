@@ -94,9 +94,8 @@ function AppContent() {
         window.dispatchEvent(new CustomEvent('cancel-download'));
       } else if (matchesShortcut(quitApp)) {
         e.preventDefault();
-        console.log('Quit shortcut triggered');
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().close();
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('request_shutdown');
       }
     };
 
