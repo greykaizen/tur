@@ -57,14 +57,47 @@ function init() {
 }
 
 function detectVideos() {
+    // Find videos in regular DOM
     const videos = document.querySelectorAll('video');
+    videos.forEach(processVideo);
 
-    videos.forEach((video) => {
-        if (videoButtons.has(video)) return;
-        if (video.offsetWidth < 200 || video.offsetHeight < 120) return;
+    // Find videos inside Shadow DOM (Reddit uses this)
+    findVideosInShadowDOM(document.body);
+}
 
-        createButtonForVideo(video);
+/**
+ * Recursively search for videos inside Shadow DOM elements
+ * Reddit's video player uses Shadow DOM, so we need to traverse into it
+ */
+function findVideosInShadowDOM(root) {
+    const elements = root.querySelectorAll('*');
+
+    elements.forEach((el) => {
+        if (el.shadowRoot) {
+            // Found a shadow root - search for videos inside
+            const shadowVideos = el.shadowRoot.querySelectorAll('video');
+            shadowVideos.forEach(processVideo);
+
+            // Recursively search deeper shadow roots
+            findVideosInShadowDOM(el.shadowRoot);
+        }
     });
+}
+
+/**
+ * Process a single video element
+ */
+function processVideo(video) {
+    if (videoButtons.has(video)) return;
+
+    // Log video for debugging
+    console.log('[tur] Found video:',
+        'dims:', video.offsetWidth + 'x' + video.offsetHeight,
+        'src:', (video.src || video.currentSrc || 'blob')?.slice(0, 50));
+
+    if (video.offsetWidth < 200 || video.offsetHeight < 120) return;
+
+    createButtonForVideo(video);
 }
 
 // ============================================================================
@@ -125,6 +158,20 @@ function createButtonForVideo(video) {
 
     const resizeObserver = new ResizeObserver(reposition);
     resizeObserver.observe(video);
+
+    // Remove button when video goes off-screen (even if manually positioned)
+    const visibilityObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            if (!entry.isIntersecting) {
+                // Video is off-screen - remove button
+                container.remove();
+                videoButtons.delete(video);
+                visibilityObserver.disconnect();
+                resizeObserver.disconnect();
+            }
+        });
+    }, { threshold: 0 });
+    visibilityObserver.observe(video);
 }
 
 function positionContainer(container, video) {
@@ -283,11 +330,16 @@ function showFormats(dropdown, videoUrl) {
 
 function sendToTur(url, quality) {
     console.log('[tur] Sending to app:', url, 'quality:', quality);
-    chrome.runtime.sendMessage({
-        type: 'download',
-        url: url,
-        quality: quality
-    });
+    try {
+        chrome.runtime.sendMessage({
+            type: 'download',
+            url: url,
+            quality: quality
+        });
+    } catch (e) {
+        // Extension context invalidated - usually means extension was reloaded
+        console.warn('[tur] Extension context invalidated, please refresh the page');
+    }
 }
 
 // ============================================================================
