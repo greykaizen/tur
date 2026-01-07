@@ -14,6 +14,8 @@
 
 const videoButtons = new WeakMap();
 let activeDropdown = null;
+let preloadedFormats = null;
+let lastUrl = window.location.href; // Track URL for SPA navigation
 
 // ============================================================================
 // Video Detection with MutationObserver
@@ -57,6 +59,12 @@ function init() {
 }
 
 function detectVideos() {
+    // Clear stale preload if URL changed (SPA navigation)
+    if (lastUrl !== window.location.href) {
+        lastUrl = window.location.href;
+        preloadedFormats = null;
+    }
+
     // Find videos in regular DOM
     const videos = document.querySelectorAll('video');
     videos.forEach(processVideo);
@@ -90,7 +98,6 @@ function findVideosInShadowDOM(root) {
 function processVideo(video) {
     if (videoButtons.has(video)) return;
 
-    // Log video for debugging
     console.log('[tur] Found video:',
         'dims:', video.offsetWidth + 'x' + video.offsetHeight,
         'src:', (video.src || video.currentSrc || 'blob')?.slice(0, 50));
@@ -98,6 +105,42 @@ function processVideo(video) {
     if (video.offsetWidth < 200 || video.offsetHeight < 120) return;
 
     createButtonForVideo(video);
+
+    // Preload formats in background (like IDM)
+    prefetchFormats();
+}
+
+/**
+ * Prefetch formats for current page URL
+ */
+function prefetchFormats() {
+    if (preloadedFormats) {
+        console.log('[tur] Prefetch skipped - already cached');
+        return;
+    }
+
+    const videoUrl = window.location.href;
+    console.log('[tur] Prefetching formats for:', videoUrl.slice(0, 50));
+
+    try {
+        chrome.runtime.sendMessage(
+            { type: 'get_formats', url: videoUrl },
+            (response) => {
+                console.log('[tur] Prefetch response:', response);
+                if (response?.success) {
+                    preloadedFormats = response;
+                    console.log('[tur] Formats cached:',
+                        'videos:', response.videos?.length || 0,
+                        'audios:', response.audios?.length || 0,
+                        'subs:', response.subtitles?.length || 0);
+                } else {
+                    console.log('[tur] Prefetch failed:', response?.error);
+                }
+            }
+        );
+    } catch (e) {
+        console.warn('[tur] Prefetch exception:', e.message);
+    }
 }
 
 // ============================================================================
@@ -261,6 +304,18 @@ function toggleDropdown(container, video) {
 
     const dropdown = document.createElement('div');
     dropdown.className = 'tur-dropdown';
+
+    container.appendChild(dropdown);
+    activeDropdown = dropdown;
+    const videoUrl = window.location.href;
+
+    // Use preloaded formats if available (instant display!)
+    if (preloadedFormats?.success) {
+        showFormats(dropdown, videoUrl, preloadedFormats);
+        return;
+    }
+
+    // Show loading and fetch
     dropdown.innerHTML = `
     <div class="tur-dropdown-header">Download Options</div>
     <div class="tur-dropdown-loading">
@@ -269,20 +324,14 @@ function toggleDropdown(container, video) {
     </div>
   `;
 
-    container.appendChild(dropdown);
-    activeDropdown = dropdown;
-
-    const videoUrl = window.location.href;
-
-    // Request formats from native host via background script
     try {
         chrome.runtime.sendMessage(
             { type: 'get_formats', url: videoUrl },
             (response) => {
-                if (activeDropdown !== dropdown) return; // Dropdown was closed
-
-                if (response?.success && response.formats) {
-                    showFormats(dropdown, videoUrl, response.formats);
+                if (activeDropdown !== dropdown) return;
+                if (response?.success) {
+                    preloadedFormats = response; // Cache for next time
+                    showFormats(dropdown, videoUrl, response);
                 } else {
                     showError(dropdown, response?.error || 'Failed to fetch formats');
                 }
@@ -301,32 +350,99 @@ function closeDropdown() {
     }
 }
 
-function showFormats(dropdown, videoUrl, formats) {
+function showFormats(dropdown, videoUrl, data) {
+    console.log('[tur] showFormats data:', data);
+
+    // Handle nested structure: { success, formats: { videos, audios, subtitles } }
+    // or flat structure: { videos, audios, subtitles }
+    const formats = data.formats || data;
+    const videos = formats.videos || [];
+    const audios = formats.audios || [];
+    const subtitles = formats.subtitles || [];
+    const browserLang = navigator.language.split('-')[0];
+
+    console.log('[tur] Parsed:', videos.length, 'videos,', audios.length, 'audios,', subtitles.length, 'subs');
+
     dropdown.innerHTML = `
     <div class="tur-dropdown-header">Download Options</div>
-    <div class="tur-dropdown-list">
-      ${formats.map(f => `
-        <button class="tur-format-btn" data-format-id="${f.format_id}">
+    <div class="tur-tabs">
+      <button class="tur-tab active" data-tab="video">Video (${videos.length})</button>
+      <button class="tur-tab" data-tab="audio">Audio (${audios.length})</button>
+      <button class="tur-tab" data-tab="subs">Subs (${subtitles.length})</button>
+    </div>
+    <div class="tur-tab-content" data-content="video">
+      ${videos.length ? videos.map((f, i) => `
+        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="video">
+          ${i === 0 ? '<span class="tur-best">Best</span>' : ''}
           <span class="tur-format-quality">${f.quality}</span>
-          <span class="tur-format-type">${f.ext.toUpperCase()}</span>
+          <span class="tur-format-type">${f.ext.toUpperCase()}${f.has_audio ? '' : ' (no audio)'}</span>
           ${f.filesize ? `<span class="tur-format-size">${formatSize(f.filesize)}</span>` : ''}
         </button>
-      `).join('')}
+      `).join('') : '<div class="tur-empty">No video formats</div>'}
     </div>
+    <div class="tur-tab-content" data-content="audio" style="display:none">
+      ${audios.length ? audios.map((f, i) => `
+        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="audio">
+          ${i === 0 ? '<span class="tur-best">Best</span>' : ''}
+          <span class="tur-format-quality">${f.quality}</span>
+          <span class="tur-format-type">${f.ext.toUpperCase()}</span>
+          ${f.language ? `<span class="tur-format-lang">${f.language}</span>` : ''}
+        </button>
+      `).join('') : '<div class="tur-empty">No audio-only formats</div>'}
+    </div>
+    <div class="tur-tab-content" data-content="subs" style="display:none">
+      ${subtitles.length ? subtitles.map((s, i) => `
+        <button class="tur-format-btn ${s.lang === browserLang || (i === 0 && !subtitles.find(x => x.lang === browserLang)) ? 'selected' : ''}" data-lang="${s.lang}" data-label="${s.name}" data-type="sub">
+          ${s.lang === browserLang ? '<span class="tur-best">Auto</span>' : ''}
+          <span class="tur-format-quality">${s.name}</span>
+          <span class="tur-format-type">${s.ext.toUpperCase()}</span>
+        </button>
+      `).join('') : '<div class="tur-empty">No subtitles</div>'}
+    </div>
+    <div class="tur-selection-summary"></div>
     <div class="tur-dropdown-footer">
-      <button class="tur-send-btn">Open in tur</button>
+      <button class="tur-send-btn">Download</button>
     </div>
   `;
 
-    dropdown.querySelectorAll('.tur-format-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            sendToTur(videoUrl, btn.dataset.formatId);
-            closeDropdown();
+    const updateSummary = () => {
+        const v = dropdown.querySelector('[data-content="video"] .selected');
+        const a = dropdown.querySelector('[data-content="audio"] .selected');
+        const s = dropdown.querySelector('[data-content="subs"] .selected');
+        const parts = [];
+        if (v) parts.push(`V: ${v.dataset.label}`);
+        if (a) parts.push(`A: ${a.dataset.label}`);
+        if (s) parts.push(`S: ${s.dataset.label}`);
+        dropdown.querySelector('.tur-selection-summary').textContent = parts.join(' • ') || 'No selection';
+    };
+    updateSummary();
+
+    // Tab switching
+    dropdown.querySelectorAll('.tur-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            dropdown.querySelectorAll('.tur-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            dropdown.querySelectorAll('.tur-tab-content').forEach(c => c.style.display = 'none');
+            dropdown.querySelector(`[data-content="${tab.dataset.tab}"]`).style.display = 'block';
         });
     });
 
+    // Format selection
+    dropdown.querySelectorAll('.tur-format-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const content = btn.closest('.tur-tab-content');
+            content.querySelectorAll('.tur-format-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            updateSummary();
+        });
+    });
+
+    // Download button
     dropdown.querySelector('.tur-send-btn').addEventListener('click', () => {
-        sendToTur(videoUrl);
+        const selectedVideo = dropdown.querySelector('[data-content="video"] .selected');
+        const selectedAudio = dropdown.querySelector('[data-content="audio"] .selected');
+        const selectedSub = dropdown.querySelector('[data-content="subs"] .selected');
+        sendToTur(videoUrl, selectedVideo?.dataset.formatId || '', selectedAudio?.dataset.formatId || '', selectedSub?.dataset.lang || '');
         closeDropdown();
     });
 }
@@ -357,13 +473,15 @@ function formatSize(bytes) {
 // Helpers
 // ============================================================================
 
-function sendToTur(url, quality) {
-    console.log('[tur] Sending to app:', url, 'quality:', quality);
+function sendToTur(url, formatId, audioId, subLang) {
+    console.log('[tur] Sending to app:', url, 'format:', formatId, 'audio:', audioId, 'sub:', subLang);
     try {
         chrome.runtime.sendMessage({
             type: 'download',
             url: url,
-            quality: quality
+            formatId: formatId,
+            audioId: audioId,
+            subLang: subLang
         });
     } catch (e) {
         // Extension context invalidated - usually means extension was reloaded

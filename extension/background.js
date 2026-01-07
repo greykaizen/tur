@@ -9,9 +9,11 @@
 
 const TUR_HOST_NAME = 'com.greykaizen.tur';
 const TUR_PROTOCOL = 'tur://';
+const CACHE_PREFIX = 'fmt_'; // Prefix for format cache keys
+const CACHE_SIZE_LIMIT = 5 * 1024 * 1024; // 5MB limit
 
 let nativePort = null;
-const pendingRequests = new Map(); // requestId -> { resolve, reject, tabId }
+const pendingRequests = new Map();
 
 // ============================================================================
 // Initialization
@@ -23,9 +25,67 @@ chrome.runtime.onInstalled.addListener(() => {
         title: 'Download with tur',
         contexts: ['link', 'video', 'audio', 'image']
     });
-
     console.log('[tur] Extension installed');
 });
+
+// NOTE: Per-tab cleanup commented out - 5MB limit with auto-cleanup handles this
+// chrome.tabs.onRemoved.addListener(async (tabId) => {
+//     try {
+//         const all = await chrome.storage.session.get(null);
+//         const keysToRemove = Object.keys(all).filter(k => k.startsWith(`${CACHE_PREFIX}${tabId}:`));
+//         if (keysToRemove.length) {
+//             await chrome.storage.session.remove(keysToRemove);
+//             console.log('[tur] Cleared cache for closed tab:', tabId, keysToRemove.length, 'entries');
+//         }
+//     } catch (e) {
+//         console.warn('[tur] Failed to clear tab cache:', e);
+//     }
+// });
+
+// ============================================================================
+// Format Cache (chrome.storage.session)
+// ============================================================================
+
+function getCacheKey(tabId, url) {
+    return `${CACHE_PREFIX}${tabId}:${url}`;
+}
+
+async function getCachedFormats(tabId, url) {
+    try {
+        const key = getCacheKey(tabId, url);
+        const result = await chrome.storage.session.get(key);
+        if (result[key]) {
+            console.log('[tur] Cache hit for tab', tabId);
+            return result[key];
+        }
+    } catch (e) {
+        console.warn('[tur] Cache read error:', e);
+    }
+    return null;
+}
+
+async function cacheFormats(tabId, url, formats) {
+    try {
+        const key = getCacheKey(tabId, url);
+
+        // Check size and clean if needed
+        const bytesUsed = await chrome.storage.session.getBytesInUse();
+        if (bytesUsed > CACHE_SIZE_LIMIT) {
+            console.log('[tur] Cache limit reached, cleaning oldest entries...');
+            const all = await chrome.storage.session.get(null);
+            const cacheKeys = Object.keys(all).filter(k => k.startsWith(CACHE_PREFIX));
+            // Remove oldest 50%
+            const toRemove = cacheKeys.slice(0, Math.ceil(cacheKeys.length / 2));
+            await chrome.storage.session.remove(toRemove);
+            console.log('[tur] Cleaned', toRemove.length, 'old cache entries');
+        }
+
+        await chrome.storage.session.set({ [key]: formats });
+        console.log('[tur] Cached formats for tab', tabId);
+    } catch (e) {
+        console.warn('[tur] Cache write error:', e);
+    }
+}
 
 // ============================================================================
 // Native Messaging
@@ -76,10 +136,22 @@ function handleNativeMessage(msg) {
             break;
 
         case 'formats':
-            // Find pending request and resolve it
+            // Build formats object with videos, audios, subtitles
+            const formatsData = {
+                videos: msg.videos || [],
+                audios: msg.audios || [],
+                subtitles: msg.subtitles || []
+            };
+
+            // Find pending request, cache formats, and resolve
             for (const [id, request] of pendingRequests) {
                 if (request.url === msg.url) {
-                    request.resolve(msg.formats);
+                    // Cache with tabId for session-based caching
+                    if (request.tabId) {
+                        cacheFormats(request.tabId, msg.url, formatsData);
+                    }
+
+                    request.resolve(formatsData);
                     pendingRequests.delete(id);
 
                     // Send to content script
@@ -87,8 +159,8 @@ function handleNativeMessage(msg) {
                         chrome.tabs.sendMessage(request.tabId, {
                             type: 'formats',
                             url: msg.url,
-                            formats: msg.formats
-                        });
+                            ...formatsData
+                        }).catch(() => { });
                     }
                     break;
                 }
@@ -97,6 +169,10 @@ function handleNativeMessage(msg) {
 
         case 'error':
             console.error('[tur] Native error:', msg.message);
+            for (const [id, request] of pendingRequests) {
+                request.reject(new Error(msg.message));
+                pendingRequests.delete(id);
+            }
             break;
 
         case 'download_started':
@@ -105,7 +181,15 @@ function handleNativeMessage(msg) {
     }
 }
 
-function requestFormats(url, tabId) {
+async function requestFormats(url, tabId) {
+    // Check cache first (per-tab)
+    if (tabId) {
+        const cached = await getCachedFormats(tabId, url);
+        if (cached) {
+            return cached;
+        }
+    }
+
     const port = connectNativeHost();
 
     if (!port) {
@@ -172,17 +256,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'download') {
         console.log('[tur] Download request:', message.url, 'format:', message.formatId);
 
-        const port = connectNativeHost();
-        if (port) {
-            port.postMessage({
-                action: 'download',
-                url: message.url,
-                format_id: message.formatId
-            });
-        } else {
-            sendToTur(message.url, message.quality);
-        }
-
+        // Send to main app via deep link
+        sendToTur(message.url, message.formatId);
         sendResponse({ success: true });
     }
 
@@ -190,14 +265,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ============================================================================
-// Deep Link Fallback
+// Deep Link to Main App
 // ============================================================================
 
-function sendToTur(url, quality) {
+function sendToTur(url, formatId) {
     const params = new URLSearchParams();
     params.set('url', url);
-    if (quality) {
-        params.set('quality', quality);
+    if (formatId) {
+        params.set('format', formatId);
     }
 
     const turUrl = `${TUR_PROTOCOL}download?${params.toString()}`;

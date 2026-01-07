@@ -14,7 +14,8 @@
       {
         "title": "tur",
         "width": 728,
-        "height": 428
+        "height": 428,
+        "decorations": true
       }
     ],
     "security": {
