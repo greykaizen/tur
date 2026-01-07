@@ -1,0 +1,9 @@
+{
+    "name": "com.greykaizen.tur",
+    "description": "tur download manager native messaging host",
+    "path": "/usr/local/bin/tur-host",
+    "type": "stdio",
+    "allowed_origins": [
+        "chrome-extension://EXTENSION_ID_HERE/"
+    ]
+}

@@ -7,10 +7,15 @@ description = "A download manager built smarter and more reliable. Reimagined fr
 license = "Apache-2.0"
 repository = "https://github.com/greykaizen/tur.git"
 readme = "README.md"
+default-run = "tur"
 
 [lib]
 name = "tur_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "tur-host"
+path = "src/bin/tur_host.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

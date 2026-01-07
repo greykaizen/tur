@@ -274,11 +274,24 @@ function toggleDropdown(container, video) {
 
     const videoUrl = window.location.href;
 
-    setTimeout(() => {
-        if (activeDropdown === dropdown) {
-            showFormats(dropdown, videoUrl);
-        }
-    }, 1500);
+    // Request formats from native host via background script
+    try {
+        chrome.runtime.sendMessage(
+            { type: 'get_formats', url: videoUrl },
+            (response) => {
+                if (activeDropdown !== dropdown) return; // Dropdown was closed
+
+                if (response?.success && response.formats) {
+                    showFormats(dropdown, videoUrl, response.formats);
+                } else {
+                    showError(dropdown, response?.error || 'Failed to fetch formats');
+                }
+            }
+        );
+    } catch (e) {
+        console.warn('[tur] Extension context invalidated');
+        showError(dropdown, 'Extension error - please refresh');
+    }
 }
 
 function closeDropdown() {
@@ -288,21 +301,15 @@ function closeDropdown() {
     }
 }
 
-function showFormats(dropdown, videoUrl) {
-    const formats = [
-        { quality: '1080p', type: 'MP4' },
-        { quality: '720p', type: 'MP4' },
-        { quality: '480p', type: 'MP4' },
-        { quality: '360p', type: 'MP4' },
-    ];
-
+function showFormats(dropdown, videoUrl, formats) {
     dropdown.innerHTML = `
     <div class="tur-dropdown-header">Download Options</div>
     <div class="tur-dropdown-list">
       ${formats.map(f => `
-        <button class="tur-format-btn" data-quality="${f.quality}">
+        <button class="tur-format-btn" data-format-id="${f.format_id}">
           <span class="tur-format-quality">${f.quality}</span>
-          <span class="tur-format-type">${f.type}</span>
+          <span class="tur-format-type">${f.ext.toUpperCase()}</span>
+          ${f.filesize ? `<span class="tur-format-size">${formatSize(f.filesize)}</span>` : ''}
         </button>
       `).join('')}
     </div>
@@ -313,7 +320,7 @@ function showFormats(dropdown, videoUrl) {
 
     dropdown.querySelectorAll('.tur-format-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
-            sendToTur(videoUrl, btn.dataset.quality);
+            sendToTur(videoUrl, btn.dataset.formatId);
             closeDropdown();
         });
     });
@@ -322,6 +329,28 @@ function showFormats(dropdown, videoUrl) {
         sendToTur(videoUrl);
         closeDropdown();
     });
+}
+
+function showError(dropdown, message) {
+    dropdown.innerHTML = `
+    <div class="tur-dropdown-header">Download Options</div>
+    <div class="tur-dropdown-error">
+      <span>⚠️ ${message}</span>
+    </div>
+    <div class="tur-dropdown-footer">
+      <button class="tur-send-btn">Open in tur app</button>
+    </div>
+  `;
+
+    dropdown.querySelector('.tur-send-btn').addEventListener('click', () => {
+        sendToTur(window.location.href);
+        closeDropdown();
+    });
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 // ============================================================================
