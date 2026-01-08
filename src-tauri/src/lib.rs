@@ -14,6 +14,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -21,10 +22,21 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let parsed_args = args::AppArgs::parse_from_vec(&args);
 
+            // Handle download URL from tur-host
+            if let Some(url) = &parsed_args.download_url {
+                eprintln!("[tur] Single-instance: received download URL: {}", url);
+                open_download_window_internal(
+                    app.clone(),
+                    url.clone(),
+                    parsed_args.format_id.clone(),
+                    parsed_args.audio_id.clone(),
+                );
+                return; // Don't show main window
+            }
+
             // Handle deep link if present
             if let Some(url_str) = &parsed_args.deep_link {
                 if let Some((url, _filename, _size_opt)) = downloads::parse_deep_link_url(url_str) {
-                    // Emit event to frontend to handle deep link
                     let _ = app.emit(
                         "deep-link-received",
                         json!({
@@ -51,6 +63,9 @@ pub fn run() {
             settings::update_setting,
             get_autostart,
             set_autostart,
+            get_default_download_path,
+            close_download_window,
+            open_download_window,
             downloads::manager::handle_download_request,
             downloads::manager::pause_download,
             downloads::manager::cancel_download,
@@ -62,14 +77,18 @@ pub fn run() {
         .on_window_event(|window, event| {
             // Handle window close request based on settings
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle();
-                let should_prevent = tray::handle_close_requested(app);
+                // Only handle close prevention for main window
+                // Download windows should close normally
+                if window.label() == "main" {
+                    let app = window.app_handle();
+                    let should_prevent = tray::handle_close_requested(app);
 
-                if should_prevent {
-                    // Prevent actual close, window is hidden
-                    api.prevent_close();
+                    if should_prevent {
+                        // Prevent actual close, window is hidden
+                        api.prevent_close();
+                    }
                 }
-                // If not prevented, the app will exit
+                // Download windows and other windows close without intervention
             }
         })
         .setup(|app| {
@@ -85,36 +104,44 @@ pub fn run() {
             // Parse command line arguments
             let args = args::AppArgs::parse();
 
-            // Handle deep links from startup
+            // Handle deep links from startup - open download window
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
                     if let Some((parsed_url, _filename, _size_opt)) =
                         downloads::parse_deep_link_url(url.as_str())
                     {
-                        let _ = app.emit(
-                            "deep-link-received",
-                            json!({
-                                "url": parsed_url.as_str(),
-                                "type": "startup"
-                            }),
+                        open_download_window_internal(
+                            app.handle().clone(),
+                            parsed_url.to_string(),
+                            None,
+                            None,
                         );
                     }
                 }
             }
 
-            // Handle deep link from command line
+            // Handle deep link from command line - open download window
             if let Some(url) = &args.deep_link {
                 if let Some((parsed_url, _filename, _size_opt)) =
                     downloads::parse_deep_link_url(url)
                 {
-                    let _ = app.emit(
-                        "deep-link-received",
-                        json!({
-                            "url": parsed_url.as_str(),
-                            "type": "command_line"
-                        }),
+                    open_download_window_internal(
+                        app.handle().clone(),
+                        parsed_url.to_string(),
+                        None,
+                        None,
                     );
                 }
+            }
+
+            // Handle direct download URL from CLI (from tur-host)
+            if let Some(url) = &args.download_url {
+                open_download_window_internal(
+                    app.handle().clone(),
+                    url.clone(),
+                    args.format_id.clone(),
+                    args.audio_id.clone(),
+                );
             }
 
             // Handle minimized startup
@@ -146,4 +173,114 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     } else {
         autostart.disable().map_err(|e| e.to_string())
     }
+}
+
+/// Get the default OS download path
+#[tauri::command]
+fn get_default_download_path(app: tauri::AppHandle) -> Result<String, String> {
+    app.path()
+        .download_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Close a download window by its label
+#[tauri::command]
+fn close_download_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    use tauri::Manager;
+    eprintln!("[tur] Closing download window: {}", label);
+
+    if let Some(window) = app.get_webview_window(&label) {
+        window.close().map_err(|e| e.to_string())
+    } else {
+        Err(format!("Window '{}' not found", label))
+    }
+}
+
+/// Internal helper to open download window (sync, for setup context)
+fn open_download_window_internal(
+    app: tauri::AppHandle,
+    url: String,
+    format_id: Option<String>,
+    audio_id: Option<String>,
+) {
+    eprintln!(
+        "[tur] open_download_window_internal called with url: {}",
+        url
+    );
+
+    // Build query string
+    let mut query = format!("url={}", urlencoding::encode(&url));
+    if let Some(f) = format_id {
+        query.push_str(&format!("&format={}", urlencoding::encode(&f)));
+    }
+    if let Some(a) = audio_id {
+        query.push_str(&format!("&audio={}", urlencoding::encode(&a)));
+    }
+
+    eprintln!("[tur] Query string: {}", query);
+
+    // Create unique window label for each download
+    let window_label = format!(
+        "download_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    eprintln!("[tur] Creating download window: {}", window_label);
+    let webview_url = tauri::WebviewUrl::App(format!("/download?{}", query).into());
+
+    if let Err(e) = tauri::WebviewWindowBuilder::new(&app, &window_label, webview_url)
+        .title("Download")
+        .inner_size(728.0, 428.0)
+        .decorations(true) // Native title bar for drag/close
+        .resizable(false)
+        .center()
+        .build()
+    {
+        eprintln!("[tur] Failed to create download window: {}", e);
+    } else {
+        eprintln!("[tur] Download window created successfully");
+    }
+}
+
+/// Open the download dialog window with URL parameters
+#[tauri::command]
+async fn open_download_window(
+    app: tauri::AppHandle,
+    url: String,
+    format_id: Option<String>,
+    audio_id: Option<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    // Build query string
+    let mut query = format!("url={}", urlencoding::encode(&url));
+    if let Some(f) = format_id {
+        query.push_str(&format!("&format={}", urlencoding::encode(&f)));
+    }
+    if let Some(a) = audio_id {
+        query.push_str(&format!("&audio={}", urlencoding::encode(&a)));
+    }
+
+    // Get or create download window
+    if let Some(win) = app.get_webview_window("download") {
+        // Navigate to URL with params and show
+        let nav_url = format!("/download?{}", query);
+        let _ = win.eval(&format!("window.location.href = '{}'", nav_url));
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        // Create new window
+        let url = tauri::WebviewUrl::App(format!("/download?{}", query).into());
+        tauri::WebviewWindowBuilder::new(&app, "download", url)
+            .title("Download")
+            .inner_size(728.0, 428.0)
+            .build()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }

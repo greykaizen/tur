@@ -256,9 +256,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'download') {
         console.log('[tur] Download request:', message.url, 'format:', message.formatId);
 
-        // Send to main app via deep link
-        sendToTur(message.url, message.formatId);
-        sendResponse({ success: true });
+        // Send to tur-host via native messaging (it will launch main app)
+        const port = connectNativeHost();
+        if (port) {
+            port.postMessage({
+                action: 'download',
+                url: message.url,
+                format_id: message.formatId || null
+            });
+            sendResponse({ success: true });
+        } else {
+            console.log('[tur] Native host not available');
+            sendResponse({ success: false, error: 'Native host not available' });
+        }
     }
 
     return false;

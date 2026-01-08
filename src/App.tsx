@@ -11,6 +11,7 @@ import History from '@/pages/History';
 import Detail from '@/pages/Detail';
 import About from '@/pages/About';
 import Donate from '@/pages/Donate';
+import Download from '@/pages/Download';
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -24,6 +25,7 @@ function AnimatedRoutes() {
         <Route path="/detail" element={<Detail />} />
         <Route path="/about" element={<About />} />
         <Route path="/donate" element={<Donate />} />
+        <Route path="/download" element={<Download />} />
       </Routes>
     </AnimatePresence>
   );
@@ -110,13 +112,25 @@ function AppContent() {
   );
 }
 
+// Standalone routes that don't use Layout
+function StandaloneRoutes() {
+  const location = useLocation();
+
+  // Check if this is a download window (no Layout needed)
+  if (location.pathname === '/download') {
+    return <Download />;
+  }
+
+  return <AppContent />;
+}
+
 export default function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
       <SettingsProvider>
         <BrowserRouter>
           <DownloadSelectionProvider>
-            <AppContent />
+            <StandaloneRoutes />
           </DownloadSelectionProvider>
         </BrowserRouter>
       </SettingsProvider>

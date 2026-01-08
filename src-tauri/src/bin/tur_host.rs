@@ -234,6 +234,54 @@ fn find_ytdlp() -> Option<String> {
     None
 }
 
+/// Find the main tur app executable
+fn find_tur_app() -> Option<String> {
+    // Check development/debug build first (for testing)
+    let dev_paths = [
+        "/home/kaizen/Repo/Rust🦀/tur/src-tauri/target/debug/tur",
+        "./target/debug/tur",
+    ];
+
+    for path in dev_paths {
+        if std::path::Path::new(path).exists() {
+            eprintln!("[tur-host] Using dev build: {}", path);
+            return Some(path.to_string());
+        }
+    }
+
+    // Check common installed locations
+    let paths = ["tur", "/usr/bin/tur", "/usr/local/bin/tur"];
+
+    for path in paths {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+
+    // Check app data directory (for development/portable installs)
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_path = data_dir.join("tur").join("tur");
+        if app_path.exists() {
+            return Some(app_path.to_string_lossy().to_string());
+        }
+    }
+
+    // Try to find via which command on Unix
+    #[cfg(unix)]
+    {
+        if let Ok(output) = Command::new("which").arg("tur").output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Get the path where yt-dlp should be stored in app data
 fn get_app_data_ytdlp_path() -> Option<String> {
     let data_dir = dirs::data_dir()?;
@@ -395,7 +443,7 @@ fn parse_ytdlp_formats(data: &YtDlpOutput) -> (Vec<VideoFormat>, Vec<AudioFormat
         let b_height: u32 = b.quality.trim_end_matches('p').parse().unwrap_or(0);
         b_height.cmp(&a_height)
     });
-    videos.truncate(10);
+    // Show all formats - no truncation
 
     // Sort audios by bitrate (highest first)
     audios.sort_by(|a, b| {
@@ -403,7 +451,7 @@ fn parse_ytdlp_formats(data: &YtDlpOutput) -> (Vec<VideoFormat>, Vec<AudioFormat
         let b_br: u32 = b.quality.trim_end_matches("kbps").parse().unwrap_or(0);
         b_br.cmp(&a_br)
     });
-    audios.truncate(5);
+    // Show all formats - no truncation
 
     (videos, audios)
 }
@@ -490,7 +538,28 @@ fn handle_message(msg: IncomingMessage) -> OutgoingMessage {
                 "[tur-host] Download request: {} format: {:?}",
                 url, format_id
             );
-            // TODO: Send to main app via deep link or IPC
+
+            // Launch main Tauri app with download args
+            let tur_path = find_tur_app();
+            if let Some(app_path) = tur_path {
+                let mut cmd = std::process::Command::new(&app_path);
+                cmd.arg("--download-url").arg(&url);
+                if let Some(fmt) = &format_id {
+                    cmd.arg("--format").arg(fmt);
+                }
+
+                match cmd.spawn() {
+                    Ok(_) => {
+                        eprintln!("[tur-host] Launched tur app for download");
+                    }
+                    Err(e) => {
+                        eprintln!("[tur-host] Failed to launch tur: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("[tur-host] Could not find tur app executable");
+            }
+
             OutgoingMessage::DownloadStarted {
                 id: format!(
                     "dl_{}",
