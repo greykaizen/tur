@@ -6,12 +6,33 @@ import { MoreHorizontal, Copy, ChevronDown, Clock, ListPlus } from 'lucide-react
 
 const CATEGORIES = ['Videos', 'Music', 'Documents', 'Software', 'Compressed', 'Other'];
 
+// Format bytes to human readable size
+function formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
 export default function DownloadPage() {
     const params = new URLSearchParams(window.location.search);
     const url = params.get('url') || '';
+    const formatId = params.get('format') || '';
+    const audioId = params.get('audio') || '';
+    const titleParam = params.get('title') || '';
+    const filesizeParam = params.get('filesize') || '';
+    const extParam = params.get('ext') || '';
+    const videoStreamUrl = params.get('videoStreamUrl') || '';
+    const audioStreamUrl = params.get('audioStreamUrl') || '';
+
+    // Debug: log received params
+    console.log('[Download] Received params:', { url, formatId, audioId, titleParam, filesizeParam, extParam, videoStreamUrl });
 
     const [savePath, setSavePath] = useState('');
     const [filename, setFilename] = useState('download');
+    const [filesize, setFilesize] = useState<number | null>(null);
+    const [fileExt, setFileExt] = useState('');
     const [category, setCategory] = useState('Videos');
     const [rememberPath, setRememberPath] = useState(false);
     const [categoryPath, setCategoryPath] = useState('');
@@ -21,16 +42,34 @@ export default function DownloadPage() {
     const moreRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        try {
-            const parsed = new URL(url);
-            const parts = parsed.pathname.split('/');
-            setFilename(decodeURIComponent(parts[parts.length - 1] || 'download'));
-        } catch { setFilename('download'); }
+        // Use title from params if available, otherwise parse from URL
+        if (titleParam) {
+            const name = extParam ? `${titleParam}.${extParam}` : titleParam;
+            setFilename(name);
+        } else {
+            try {
+                const parsed = new URL(url);
+                const parts = parsed.pathname.split('/');
+                const fname = decodeURIComponent(parts[parts.length - 1] || 'download');
+                setFilename(fname);
+            } catch {
+                setFilename('download');
+            }
+        }
+
+        // Set filesize if provided
+        if (filesizeParam) {
+            const size = parseInt(filesizeParam, 10);
+            if (!isNaN(size)) setFilesize(size);
+        }
+
+        // Set extension
+        if (extParam) setFileExt(extParam);
 
         invoke<string>('get_default_download_path')
             .then(path => { setSavePath(path); setCategoryPath(path); })
             .catch(() => setSavePath('~/Downloads'));
-    }, [url]);
+    }, [url, titleParam, filesizeParam, extParam]);
 
     useEffect(() => {
         const handleClick = (e: MouseEvent) => {
@@ -46,7 +85,12 @@ export default function DownloadPage() {
     };
 
     const handleClose = async () => {
-        try { await getCurrentWindow().close(); } catch (e) { console.error(e); }
+        const label = getCurrentWindow().label;
+        try {
+            await invoke('close_download_window', { label });
+        } catch (e) {
+            console.error('[Download] Close failed:', e);
+        }
     };
 
     const handleCopy = () => navigator.clipboard.writeText(url);
@@ -55,7 +99,23 @@ export default function DownloadPage() {
         if (!url) return;
         setIsLoading(true);
         try {
-            await invoke('handle_download_request', { request: { type: 'New', data: [url] } });
+            // Use actual stream URL if available (from yt-dlp format extraction)
+            // Otherwise fall back to page URL for direct downloads
+            const downloadUrl = videoStreamUrl || url;
+
+            console.log('[Download] Starting download with URL:', downloadUrl, 'filename:', filename);
+
+            // Pass URL with optional filename (null = extract from headers)
+            await invoke('handle_download_request', {
+                request: {
+                    type: 'New',
+                    data: [{
+                        url: downloadUrl,
+                        filename: (videoStreamUrl && filename) ? filename : null
+                    }]
+                }
+            });
+
             await handleClose();
         } catch (e) {
             console.error('Download failed:', e);
@@ -114,10 +174,10 @@ export default function DownloadPage() {
                         <div className="flex items-center gap-2">
                             <label className="w-20 text-xs text-muted-foreground shrink-0">Category</label>
                             <select value={category} onChange={(e) => setCategory(e.target.value)}
-                                className="w-32 px-2.5 py-1.5 text-xs bg-background text-foreground rounded-lg border border-border">
+                                className="w-32 px-2.5 py-1.5 text-xs bg-background text-foreground rounded-xl border border-border">
                                 {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
-                            <button className="w-8 h-8 flex items-center justify-center text-sm bg-muted hover:bg-muted/80 rounded-lg border border-border">
+                            <button className="w-8 h-8 flex items-center justify-center text-sm bg-muted hover:bg-muted/80 rounded-md border border-border">
                                 +
                             </button>
                         </div>
@@ -130,8 +190,8 @@ export default function DownloadPage() {
                                     const v = e.target.value, i = v.lastIndexOf('/');
                                     if (i > 0) { setSavePath(v.slice(0, i)); setFilename(v.slice(i + 1)); }
                                 }}
-                                className="flex-1 px-2.5 py-1.5 text-xs bg-muted/30 rounded-lg border border-border" />
-                            <button onClick={handleBrowse} className="w-8 h-8 flex items-center justify-center bg-muted hover:bg-muted/80 rounded-lg border border-border">
+                                className="flex-1 px-2.5 py-1.5 text-xs bg-muted/30 rounded-md border border-border" />
+                            <button onClick={handleBrowse} className="w-8 h-8 flex items-center justify-center bg-muted hover:bg-muted/80 rounded-md border border-border">
                                 <MoreHorizontal className="w-3.5 h-3.5" />
                             </button>
                         </div>
@@ -143,24 +203,30 @@ export default function DownloadPage() {
                                 Remember this path for "{category}"
                             </label>
                             <input value={categoryPath} onChange={(e) => setCategoryPath(e.target.value)}
-                                className="px-2.5 py-1.5 text-xs bg-muted/30 rounded-lg border border-border" />
+                                className="px-2.5 py-1.5 text-xs bg-muted/30 rounded-md border border-border" />
                         </div>
 
                         {/* Description */}
                         <div className="flex items-center gap-2">
                             <label className="w-20 text-xs text-muted-foreground shrink-0">Description</label>
                             <input value={description} onChange={(e) => setDescription(e.target.value)}
-                                className="flex-1 px-2.5 py-1.5 text-xs bg-muted/30 rounded-lg border border-border" />
+                                className="flex-1 px-2.5 py-1.5 text-xs bg-muted/30 rounded-md border border-border" />
                         </div>
                     </div>
 
                     {/* Right Column: Logo, Size, Preview - centered */}
                     <div className="w-32 p-3 flex flex-col items-center justify-center gap-1 border-l border-border">
                         <div className="w-20 h-20 bg-muted rounded-xl flex items-center justify-center border border-border">
-                            <span className="text-xs text-muted-foreground">logo</span>
+                            {fileExt ? (
+                                <span className="text-lg font-bold text-muted-foreground uppercase">.{fileExt}</span>
+                            ) : (
+                                <span className="text-xs text-muted-foreground">file</span>
+                            )}
                         </div>
-                        <span className="text-xs text-primary font-medium mt-5">size</span>
-                        <button onClick={handlePreview} className="px-3 py-1.5 text-xs bg-card hover:bg-muted/80 rounded-lg border border-border mt-4">
+                        <span className="text-xs text-primary font-medium mt-5">
+                            {filesize ? formatFileSize(filesize) : 'Unknown size'}
+                        </span>
+                        <button onClick={handlePreview} className="px-3 py-1.5 text-xs bg-card hover:bg-muted/80 rounded-md border border-border mt-4">
                             preview
                         </button>
                     </div>
@@ -171,7 +237,7 @@ export default function DownloadPage() {
                     <button
                         onClick={handleStart}
                         disabled={isLoading}
-                        className="w-full py-2.5 text-sm font-semibold bg-emerald-100/50 dark:bg-emerald-950/30 hover:bg-emerald-200/70 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 transition-colors disabled:opacity-50 rounded-b-2xl"
+                        className="w-full py-3.5 text-sm font-semibold bg-emerald-100/50 dark:bg-emerald-950/30 hover:bg-emerald-200/70 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 transition-colors disabled:opacity-50 rounded-b-2xl"
                     >
                         {isLoading ? 'Starting...' : 'Download Now'}
                     </button>

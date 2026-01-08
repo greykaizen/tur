@@ -8,6 +8,11 @@ pub struct AppArgs {
     pub download_url: Option<String>,
     pub format_id: Option<String>,
     pub audio_id: Option<String>,
+    pub title: Option<String>,
+    pub filesize: Option<u64>,
+    pub ext: Option<String>,
+    pub video_stream_url: Option<String>,
+    pub audio_stream_url: Option<String>,
     pub help: bool,
     pub version: bool,
 }
@@ -21,6 +26,11 @@ impl Default for AppArgs {
             download_url: None,
             format_id: None,
             audio_id: None,
+            title: None,
+            filesize: None,
+            ext: None,
+            video_stream_url: None,
+            audio_stream_url: None,
             help: false,
             version: false,
         }
@@ -63,6 +73,36 @@ impl AppArgs {
                     if i + 1 < args.len() {
                         i += 1;
                         parsed.audio_id = Some(args[i].clone());
+                    }
+                }
+                "--title" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.title = Some(args[i].clone());
+                    }
+                }
+                "--filesize" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.filesize = args[i].parse().ok();
+                    }
+                }
+                "--ext" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.ext = Some(args[i].clone());
+                    }
+                }
+                "--video-stream-url" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.video_stream_url = Some(args[i].clone());
+                    }
+                }
+                "--audio-stream-url" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.audio_stream_url = Some(args[i].clone());
                     }
                 }
                 arg if arg.starts_with("tur://") => {
@@ -112,6 +152,36 @@ impl AppArgs {
                     if i + 1 < args.len() {
                         i += 1;
                         parsed.audio_id = Some(args[i].clone());
+                    }
+                }
+                "--title" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.title = Some(args[i].clone());
+                    }
+                }
+                "--filesize" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.filesize = args[i].parse().ok();
+                    }
+                }
+                "--ext" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.ext = Some(args[i].clone());
+                    }
+                }
+                "--video-stream-url" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.video_stream_url = Some(args[i].clone());
+                    }
+                }
+                "--audio-stream-url" => {
+                    if i + 1 < args.len() {
+                        i += 1;
+                        parsed.audio_stream_url = Some(args[i].clone());
                     }
                 }
                 arg if arg.starts_with("tur://") => {

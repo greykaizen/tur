@@ -70,11 +70,19 @@ pub enum ControlCommand {
     SpeedLimit { bytes_per_sec: u64 },
 }
 
+/// A single download item for new downloads
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NewDownloadItem {
+    pub url: Url,
+    /// Optional filename override - if None, extract from headers/URL
+    pub filename: Option<String>,
+}
+
 /// Download request types from frontend
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum DownloadRequest {
-    New(Vec<Url>),
+    New(Vec<NewDownloadItem>),
     Resume(Vec<Uuid>),
 }
 
@@ -100,8 +108,8 @@ impl DownloadManager {
         let db = Database::initialize(app).map_err(|e| e.to_string())?;
 
         match request {
-            DownloadRequest::New(urls) => {
-                self.handle_new_downloads(app, &db, &client, &settings, urls)
+            DownloadRequest::New(items) => {
+                self.handle_new_downloads(app, &db, &client, &settings, items)
                     .await
             }
             DownloadRequest::Resume(uuids) => {
@@ -118,9 +126,11 @@ impl DownloadManager {
         db: &Database,
         client: &reqwest::Client,
         settings: &AppSettings,
-        urls: Vec<Url>,
+        items: Vec<NewDownloadItem>,
     ) -> Result<(), String> {
-        for url in urls {
+        for item in items {
+            let url = item.url;
+            let custom_filename = item.filename;
             // Check max_concurrent limit (0 = unlimited)
             let max_concurrent = settings.download.max_concurrent;
             if max_concurrent > 0 && self.active_count() >= max_concurrent as usize {
@@ -141,8 +151,11 @@ impl DownloadManager {
             println!("  ✅ HEAD response status: {}", response.status());
             let hdrs = response.headers();
 
-            let filename = headers::extract_filename(hdrs)
-                .unwrap_or_else(|| headers::extract_filename_from_url(url_str));
+            // Use custom filename if provided, otherwise extract from headers or URL
+            let filename = custom_filename.unwrap_or_else(|| {
+                headers::extract_filename(hdrs)
+                    .unwrap_or_else(|| headers::extract_filename_from_url(url_str))
+            });
             let size = headers::extract_content_length(hdrs).map(|s| s as i64);
             let etag = headers::extract_etag(hdrs);
             let last_modified = headers::extract_last_modified(hdrs);

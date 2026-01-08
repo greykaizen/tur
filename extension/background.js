@@ -254,7 +254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'download') {
-        console.log('[tur] Download request:', message.url, 'format:', message.formatId);
+        console.log('[tur] Download request:', message.url, 'format:', message.formatId, 'title:', message.title, 'streamUrl:', message.videoStreamUrl);
 
         // Send to tur-host via native messaging (it will launch main app)
         const port = connectNativeHost();
@@ -262,7 +262,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             port.postMessage({
                 action: 'download',
                 url: message.url,
-                format_id: message.formatId || null
+                format_id: message.formatId || null,
+                title: message.title || null,
+                filesize: message.filesize || null,
+                ext: message.ext || null,
+                video_stream_url: message.videoStreamUrl || null,
+                audio_stream_url: message.audioStreamUrl || null
             });
             sendResponse({ success: true });
         } else {

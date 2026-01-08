@@ -30,6 +30,11 @@ pub fn run() {
                     url.clone(),
                     parsed_args.format_id.clone(),
                     parsed_args.audio_id.clone(),
+                    parsed_args.title.clone(),
+                    parsed_args.filesize,
+                    parsed_args.ext.clone(),
+                    parsed_args.video_stream_url.clone(),
+                    parsed_args.audio_stream_url.clone(),
                 );
                 return; // Don't show main window
             }
@@ -66,6 +71,7 @@ pub fn run() {
             get_default_download_path,
             close_download_window,
             open_download_window,
+            start_ytdlp_download,
             downloads::manager::handle_download_request,
             downloads::manager::pause_download,
             downloads::manager::cancel_download,
@@ -115,6 +121,11 @@ pub fn run() {
                             parsed_url.to_string(),
                             None,
                             None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
                         );
                     }
                 }
@@ -130,6 +141,11 @@ pub fn run() {
                         parsed_url.to_string(),
                         None,
                         None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     );
                 }
             }
@@ -141,6 +157,11 @@ pub fn run() {
                     url.clone(),
                     args.format_id.clone(),
                     args.audio_id.clone(),
+                    args.title.clone(),
+                    args.filesize,
+                    args.ext.clone(),
+                    args.video_stream_url.clone(),
+                    args.audio_stream_url.clone(),
                 );
             }
 
@@ -197,12 +218,94 @@ fn close_download_window(app: tauri::AppHandle, label: String) -> Result<(), Str
     }
 }
 
+/// Start a yt-dlp download with format selection
+#[tauri::command]
+async fn start_ytdlp_download(
+    url: String,
+    format_id: String,
+    audio_id: Option<String>,
+    output_path: String,
+    filename: String,
+) -> Result<String, String> {
+    use std::process::Command;
+
+    eprintln!(
+        "[tur] Starting yt-dlp download: {} format: {} audio: {:?} -> {}/{}",
+        url, format_id, audio_id, output_path, filename
+    );
+
+    // Find yt-dlp binary
+    let ytdlp =
+        find_ytdlp().ok_or_else(|| "yt-dlp not found. Please install yt-dlp.".to_string())?;
+
+    // Build format string: video+audio or just video
+    let format_str = if let Some(audio) = audio_id {
+        format!("{}+{}", format_id, audio)
+    } else {
+        format_id.clone()
+    };
+
+    // Build output template
+    let output_template = format!("{}/{}.%(ext)s", output_path, filename.replace('.', "_"));
+
+    // Spawn yt-dlp in background
+    let child = Command::new(&ytdlp)
+        .args([
+            "-f",
+            &format_str,
+            "-o",
+            &output_template,
+            "--no-warnings",
+            "--progress",
+            &url,
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to start yt-dlp: {}", e))?;
+
+    eprintln!("[tur] yt-dlp started with PID: {:?}", child.id());
+
+    Ok(format!("Download started: {}", filename))
+}
+
+/// Find yt-dlp binary in common locations
+fn find_ytdlp() -> Option<String> {
+    use std::process::Command;
+
+    // Check system paths
+    let paths = ["yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"];
+    for path in paths {
+        if Command::new(path)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(path.to_string());
+        }
+    }
+
+    // Check app data directory
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_path = data_dir.join("tur").join("bin").join("yt-dlp");
+        if app_path.exists() {
+            return Some(app_path.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
 /// Internal helper to open download window (sync, for setup context)
 fn open_download_window_internal(
     app: tauri::AppHandle,
     url: String,
     format_id: Option<String>,
     audio_id: Option<String>,
+    title: Option<String>,
+    filesize: Option<u64>,
+    ext: Option<String>,
+    video_stream_url: Option<String>,
+    audio_stream_url: Option<String>,
 ) {
     eprintln!(
         "[tur] open_download_window_internal called with url: {}",
@@ -216,6 +319,22 @@ fn open_download_window_internal(
     }
     if let Some(a) = audio_id {
         query.push_str(&format!("&audio={}", urlencoding::encode(&a)));
+    }
+    if let Some(t) = title {
+        query.push_str(&format!("&title={}", urlencoding::encode(&t)));
+    }
+    if let Some(s) = filesize {
+        query.push_str(&format!("&filesize={}", s));
+    }
+    if let Some(e) = ext {
+        query.push_str(&format!("&ext={}", urlencoding::encode(&e)));
+    }
+    // Stream URLs for direct download
+    if let Some(vs) = video_stream_url {
+        query.push_str(&format!("&videoStreamUrl={}", urlencoding::encode(&vs)));
+    }
+    if let Some(as_) = audio_stream_url {
+        query.push_str(&format!("&audioStreamUrl={}", urlencoding::encode(&as_)));
     }
 
     eprintln!("[tur] Query string: {}", query);

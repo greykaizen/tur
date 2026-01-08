@@ -29,6 +29,11 @@ pub enum IncomingMessage {
     Download {
         url: String,
         format_id: Option<String>,
+        title: Option<String>,
+        filesize: Option<u64>,
+        ext: Option<String>,
+        video_stream_url: Option<String>,
+        audio_stream_url: Option<String>,
     },
 }
 
@@ -62,6 +67,7 @@ pub struct VideoFormat {
     pub quality: String,
     pub filesize: Option<u64>,
     pub has_audio: bool,
+    pub url: Option<String>,
 }
 
 /// Audio-only format
@@ -72,6 +78,7 @@ pub struct AudioFormat {
     pub quality: String, // bitrate or description
     pub filesize: Option<u64>,
     pub language: Option<String>,
+    pub url: Option<String>,
 }
 
 /// Subtitle track
@@ -113,6 +120,8 @@ struct YtDlpFormat {
     abr: Option<f64>, // audio bitrate
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -416,6 +425,7 @@ fn parse_ytdlp_formats(data: &YtDlpOutput) -> (Vec<VideoFormat>, Vec<AudioFormat
                 quality,
                 filesize: f.filesize.or(f.filesize_approx),
                 has_audio,
+                url: f.url.clone(),
             });
         } else if has_audio {
             // Audio-only format
@@ -433,6 +443,7 @@ fn parse_ytdlp_formats(data: &YtDlpOutput) -> (Vec<VideoFormat>, Vec<AudioFormat
                 quality,
                 filesize: f.filesize.or(f.filesize_approx),
                 language: f.language.clone(),
+                url: f.url.clone(),
             });
         }
     }
@@ -533,10 +544,18 @@ fn handle_message(msg: IncomingMessage) -> OutgoingMessage {
             get_formats_ytdlp(&url)
         }
 
-        IncomingMessage::Download { url, format_id } => {
+        IncomingMessage::Download {
+            url,
+            format_id,
+            title,
+            filesize,
+            ext,
+            video_stream_url,
+            audio_stream_url,
+        } => {
             eprintln!(
-                "[tur-host] Download request: {} format: {:?}",
-                url, format_id
+                "[tur-host] Download request: {} format: {:?} title: {:?} size: {:?} ext: {:?} stream: {:?}",
+                url, format_id, title, filesize, ext, video_stream_url
             );
 
             // Launch main Tauri app with download args
@@ -546,6 +565,22 @@ fn handle_message(msg: IncomingMessage) -> OutgoingMessage {
                 cmd.arg("--download-url").arg(&url);
                 if let Some(fmt) = &format_id {
                     cmd.arg("--format").arg(fmt);
+                }
+                if let Some(t) = &title {
+                    cmd.arg("--title").arg(t);
+                }
+                if let Some(s) = filesize {
+                    cmd.arg("--filesize").arg(s.to_string());
+                }
+                if let Some(e) = &ext {
+                    cmd.arg("--ext").arg(e);
+                }
+                // Pass actual stream URLs for direct download
+                if let Some(vs) = &video_stream_url {
+                    cmd.arg("--video-stream-url").arg(vs);
+                }
+                if let Some(as_) = &audio_stream_url {
+                    cmd.arg("--audio-stream-url").arg(as_);
                 }
 
                 match cmd.spawn() {

@@ -372,7 +372,7 @@ function showFormats(dropdown, videoUrl, data) {
     </div>
     <div class="tur-tab-content" data-content="video">
       ${videos.length ? videos.map((f, i) => `
-        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="video">
+        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="video" data-ext="${f.ext}" data-filesize="${f.filesize || ''}" data-url="${f.url || ''}">
           ${i === 0 ? '<span class="tur-best">Best</span>' : ''}
           <span class="tur-format-quality">${f.quality}</span>
           <span class="tur-format-type">${f.ext.toUpperCase()}${f.has_audio ? '' : ' (no audio)'}</span>
@@ -382,7 +382,7 @@ function showFormats(dropdown, videoUrl, data) {
     </div>
     <div class="tur-tab-content" data-content="audio" style="display:none">
       ${audios.length ? audios.map((f, i) => `
-        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="audio">
+        <button class="tur-format-btn ${i === 0 ? 'selected' : ''}" data-format-id="${f.format_id}" data-label="${f.quality}" data-type="audio" data-ext="${f.ext}" data-filesize="${f.filesize || ''}" data-url="${f.url || ''}">
           ${i === 0 ? '<span class="tur-best">Best</span>' : ''}
           <span class="tur-format-quality">${f.quality}</span>
           <span class="tur-format-type">${f.ext.toUpperCase()}</span>
@@ -442,7 +442,21 @@ function showFormats(dropdown, videoUrl, data) {
         const selectedVideo = dropdown.querySelector('[data-content="video"] .selected');
         const selectedAudio = dropdown.querySelector('[data-content="audio"] .selected');
         const selectedSub = dropdown.querySelector('[data-content="subs"] .selected');
-        sendToTur(videoUrl, selectedVideo?.dataset.formatId || '', selectedAudio?.dataset.formatId || '', selectedSub?.dataset.lang || '');
+
+        // Get video title from page (YouTube specific, fallback to document title)
+        const videoTitle = document.querySelector('h1.ytd-video-primary-info-renderer yt-formatted-string, h1.ytd-watch-metadata yt-formatted-string, #title h1')?.textContent?.trim()
+            || document.title.replace(' - YouTube', '').trim()
+            || 'download';
+
+        // Get ext and filesize from selected format
+        const ext = selectedVideo?.dataset.ext || selectedAudio?.dataset.ext || '';
+        const filesize = selectedVideo?.dataset.filesize || selectedAudio?.dataset.filesize || '';
+
+        // Get actual stream URLs
+        const videoStreamUrl = selectedVideo?.dataset.url || '';
+        const audioStreamUrl = selectedAudio?.dataset.url || '';
+
+        sendToTur(videoUrl, selectedVideo?.dataset.formatId || '', selectedAudio?.dataset.formatId || '', selectedSub?.dataset.lang || '', videoTitle, filesize, ext, videoStreamUrl, audioStreamUrl);
         closeDropdown();
     });
 }
@@ -473,15 +487,20 @@ function formatSize(bytes) {
 // Helpers
 // ============================================================================
 
-function sendToTur(url, formatId, audioId, subLang) {
-    console.log('[tur] Sending to app:', url, 'format:', formatId, 'audio:', audioId, 'sub:', subLang);
+function sendToTur(url, formatId, audioId, subLang, title, filesize, ext, videoStreamUrl, audioStreamUrl) {
+    console.log('[tur] Sending to app:', url, 'format:', formatId, 'title:', title, 'size:', filesize, 'ext:', ext, 'streamUrl:', videoStreamUrl);
     try {
         chrome.runtime.sendMessage({
             type: 'download',
             url: url,
             formatId: formatId,
             audioId: audioId,
-            subLang: subLang
+            subLang: subLang,
+            title: title || '',
+            filesize: filesize ? parseInt(filesize, 10) : null,
+            ext: ext || '',
+            videoStreamUrl: videoStreamUrl || '',
+            audioStreamUrl: audioStreamUrl || ''
         });
     } catch (e) {
         // Extension context invalidated - usually means extension was reloaded
