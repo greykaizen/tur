@@ -49,3 +49,22 @@ function connectToApp() {
         }
     });
 }
+
+// Settings
+const DEFAULT_DESIGN = 'v1';
+
+// Initialize
+chrome.storage.sync.get(['tur_design'], (result) => {
+    const design = result.tur_design || DEFAULT_DESIGN;
+    const radio = document.querySelector(`input[name="design"][value="${design}"]`);
+    if (radio) radio.checked = true;
+});
+
+// Save on change
+document.querySelectorAll('input[name="design"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        if (e.target.checked) {
+            chrome.storage.sync.set({ tur_design: e.target.value });
+        }
+    });
+});

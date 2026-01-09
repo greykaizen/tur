@@ -1,10 +1,15 @@
+@font-face {
+    font-family: 'Margin';
+    src: url('../fonts/Margin.otf') format('opentype');
+}
+
 body {
     width: 280px;
-    padding: 16px;
-    margin: 0;
+    background-color: var(--bg);
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #1a1a1a;
-    color: #e5e5e5;
+    margin: 0;
+    padding: 16px;
 }
 
 @media (prefers-color-scheme: light) {
