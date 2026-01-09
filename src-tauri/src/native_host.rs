@@ -153,6 +153,22 @@ fn write_message(msg: &OutgoingMessage) -> io::Result<()> {
 // yt-dlp Integration (FAST command)
 // ============================================================================
 
+// ============================================================================
+// Message Handler
+// ============================================================================
+
+pub enum HostAction {
+    OpenDownload {
+        url: String,
+        format_id: Option<String>,
+        title: Option<String>,
+        filesize: Option<u64>,
+        ext: Option<String>,
+        video_stream_url: Option<String>,
+        audio_stream_url: Option<String>,
+    },
+}
+
 fn handle_message(
     msg: IncomingMessage,
     ytdlp_path: &Option<String>,
@@ -312,4 +328,86 @@ fn get_formats_ytdlp(url: &str, ytdlp_path: &Option<String>) -> OutgoingMessage 
             message: format!("Failed to run yt-dlp: {}", e),
         },
     }
+}
+
+fn parse_formats(formats: &[YtDlpFormat]) -> (Vec<VideoFormat>, Vec<AudioFormat>) {
+    let mut videos = Vec::new();
+    let mut audios = Vec::new();
+
+    for f in formats {
+        let has_video = f.vcodec.as_ref().map(|v| v != "none").unwrap_or(false);
+        let has_audio = f.acodec.as_ref().map(|a| a != "none").unwrap_or(false);
+
+        if has_video {
+            let quality = f
+                .height
+                .map(|h| format!("{}p", h))
+                .or_else(|| f.format_note.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            videos.push(VideoFormat {
+                format_id: f.format_id.clone(),
+                ext: f.ext.clone(),
+                quality,
+                filesize: f.filesize.or(f.filesize_approx),
+                has_audio,
+                url: f.url.clone(),
+            });
+        } else if has_audio {
+            let quality = f
+                .abr
+                .map(|abr| format!("{}kbps", abr as u32))
+                .or_else(|| f.format_note.clone())
+                .unwrap_or_else(|| "audio".to_string());
+
+            audios.push(AudioFormat {
+                format_id: f.format_id.clone(),
+                ext: f.ext.clone(),
+                quality,
+                filesize: f.filesize.or(f.filesize_approx),
+                language: f.language.clone(),
+                url: f.url.clone(),
+            });
+        }
+    }
+
+    // Sort by quality (highest first)
+    videos.sort_by(|a, b| {
+        let a_height: u32 = a.quality.trim_end_matches('p').parse().unwrap_or(0);
+        let b_height: u32 = b.quality.trim_end_matches('p').parse().unwrap_or(0);
+        b_height.cmp(&a_height)
+    });
+
+    audios.sort_by(|a, b| {
+        let a_br: u32 = a.quality.trim_end_matches("kbps").parse().unwrap_or(0);
+        let b_br: u32 = b.quality.trim_end_matches("kbps").parse().unwrap_or(0);
+        b_br.cmp(&a_br)
+    });
+
+    (videos, audios)
+}
+
+fn find_ytdlp() -> Option<String> {
+    // Check system paths
+    let paths = ["yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"];
+    for path in paths {
+        if Command::new(path)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(path.to_string());
+        }
+    }
+
+    // Check app data directory
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_path = data_dir.join("tur").join("bin").join("yt-dlp");
+        if app_path.exists() {
+            return Some(app_path.to_string_lossy().to_string());
+        }
+    }
+
+    None
 }
