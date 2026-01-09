@@ -27,7 +27,7 @@ export default function DownloadPage() {
     const audioStreamUrl = params.get('audioStreamUrl') || '';
 
     // Debug: log received params
-    console.log('[Download] Received params:', { url, formatId, audioId, titleParam, filesizeParam, extParam, videoStreamUrl });
+    console.log('[Download] Received params:', { url, formatId, audioId, titleParam, filesizeParam, extParam, videoStreamUrl, audioStreamUrl });
 
     const [savePath, setSavePath] = useState('');
     const [filename, setFilename] = useState('download');
