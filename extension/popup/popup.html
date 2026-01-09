@@ -9,7 +9,7 @@
 <body>
   <div class="header">
     <img src="../icons/icon32.png" alt="tur" class="logo">
-    <h1>tur downloader</h1>
+    <h1 style="font-size: xxx-large;">tur</h1>
   </div>
 
   <div id="status-container" class="status-box">
@@ -21,27 +21,29 @@
     <!-- Injected by JS -->
   </div>
 
-  <div class="settings-box">
-    <h2>Appearance</h2>
-    <div class="radio-group">
-      <label class="radio-label">
-        <input type="radio" name="design" value="v1" checked>
-        <span>Default</span>
-      </label>
-      <label class="radio-label">
-        <input type="radio" name="design" value="v2">
-        <span>Large (Margin Font)</span>
-      </label>
-      <label class="radio-label">
-        <input type="radio" name="design" value="v3">
-        <span>Text Only</span>
-      </label>
-      <label class="radio-label">
-        <input type="radio" name="design" value="v4">
-        <span>Logo Only</span>
-      </label>
+  <details class="settings-box">
+    <summary>Appearance</summary>
+    <div class="settings-content">
+      <div class="radio-group">
+        <label class="radio-label">
+          <input type="radio" name="design" value="v1" checked>
+          <span>Default</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="design" value="v2">
+          <span>Large (Margin Font)</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="design" value="v3">
+          <span>Text Only</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="design" value="v4">
+          <span>Logo Only</span>
+        </label>
+      </div>
     </div>
-  </div>
+  </details>
 
   <script src="popup.js"></script>
 </body>
