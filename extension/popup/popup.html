@@ -1,19 +1,27 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="UTF-8">
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
-  <div class="popup">
-    <div class="header">
-      <span class="logo">tur</span>
-    </div>
-    <div class="content">
-      <p>Download videos and files with tur</p>
-      <button id="open-app">Open tur App</button>
-    </div>
+  <div class="header">
+    <img src="../icons/icon32.png" alt="tur" class="logo">
+    <h1>tur downloader</h1>
   </div>
+
+  <div id="status-container" class="status-box">
+    <div class="status-indicator"></div>
+    <span id="status-text">Checking status...</span>
+  </div>
+
+  <div id="action-container" class="action-box">
+    <!-- Injected by JS -->
+  </div>
+
   <script src="popup.js"></script>
 </body>
+
 </html>

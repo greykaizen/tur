@@ -3,6 +3,41 @@
  */
 
 /* ============================================================================
+   Theming
+   ============================================================================ */
+
+.tur-dropdown {
+    /* Dark Mode (Default) */
+    --tur-bg: #1a1a1a;
+    --tur-border: #333333;
+    --tur-text-main: #dddddd;
+    --tur-text-muted: #888888;
+    --tur-hover: #2a2a2a;
+    --tur-active: #222222;
+    --tur-accent: #3b82f6;
+    --tur-accent-hover: #2563eb;
+    --tur-accent-text: #ffffff;
+    --tur-error-bg: #fee2e2;
+    --tur-error-text: #b91c1c;
+
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: var(--tur-text-main);
+}
+
+.tur-dropdown.tur-light {
+    /* Light Mode */
+    --tur-bg: #ffffff;
+    --tur-border: #e5e5e5;
+    --tur-text-main: #1f2937;
+    --tur-text-muted: #6b7280;
+    --tur-hover: #f3f4f6;
+    --tur-active: #e5e7eb;
+    --tur-accent: #2563eb;
+    --tur-accent-hover: #1d4ed8;
+    --tur-accent-text: #ffffff;
+}
+
+/* ============================================================================
    Container
    ============================================================================ */
 
@@ -13,6 +48,7 @@
     font-size: 12px;
     cursor: grab;
     user-select: none;
+    z-index: 2147483646;
 }
 
 .tur-container:active {
@@ -25,7 +61,6 @@
 
 .tur-download-btn {
     all: initial;
-    /* Reset all inherited styles */
     display: flex !important;
     align-items: center !important;
     gap: 6px !important;
@@ -178,6 +213,16 @@
     font-size: 12px;
 }
 
+.tur-dropdown-error {
+    padding: 16px 12px;
+    color: var(--tur-error-text);
+    background: var(--tur-error-bg);
+    font-size: 12px;
+    font-weight: 500;
+    text-align: center;
+    border-bottom: 1px solid var(--tur-border);
+}
+
 .tur-spinner {
     width: 14px;
     height: 14px;
@@ -286,4 +331,107 @@
 
 .tur-send-btn:hover {
     background: #2563eb;
+}
+
+/* ============================================================================
+   App Not Running State
+   ============================================================================ */
+
+.tur-app-not-running {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 16px;
+    text-align: center;
+}
+
+.tur-warning-icon {
+    font-size: 32px;
+    margin-bottom: 8px;
+}
+
+.tur-warning-text {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.tur-warning-hint {
+    color: #888;
+    font-size: 11px;
+    margin-bottom: 16px;
+}
+
+.tur-launch-btn {
+    padding: 10px 24px;
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+}
+
+.tur-launch-btn:hover {
+    background: #2563eb;
+    transform: scale(1.02);
+}
+
+/* ============================================================================
+   Toast Notifications
+   ============================================================================ */
+
+.tur-toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: auto;
+    right: auto;
+    background: #333;
+    color: #fff;
+    padding: 12px 24px;
+    border-radius: 8px;
+    z-index: 2147483647;
+    animation: tur-slide-in 0.3s ease-out;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.tur-toast.error {
+    background: var(--tur-error-bg, #fee2e2);
+    color: var(--tur-error-text, #b91c1c);
+    border: 1px solid rgba(185, 28, 28, 0.2);
+}
+
+.tur-toast.info {
+    background: var(--tur-bg, #1a1a1a);
+    color: var(--tur-text-main, #dddddd);
+    border: 1px solid var(--tur-border, #333);
+}
+
+@keyframes tur-slide-in {
+    from {
+        transform: translate(-50%, -100%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translate(-50%, 0);
+        opacity: 1;
+    }
+}
+
+@keyframes tur-slide-out {
+    to {
+        transform: translate(-50%, -100%);
+        opacity: 0;
+    }
 }
