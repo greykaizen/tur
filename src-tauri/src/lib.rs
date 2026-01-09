@@ -7,6 +7,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 pub mod args;
 pub mod database;
 pub mod downloads;
+pub mod native_host;
 pub mod settings;
 pub mod tray;
 
@@ -22,7 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let parsed_args = args::AppArgs::parse_from_vec(&args);
 
-            // Handle download URL from tur-host
+            // Handle download URL from CLI/extension
             if let Some(url) = &parsed_args.download_url {
                 eprintln!("[tur] Single-instance: received download URL: {}", url);
                 open_download_window_internal(
@@ -110,6 +111,55 @@ pub fn run() {
             // Parse command line arguments
             let args = args::AppArgs::parse();
 
+            // Detect native messaging mode by checking argv[1]
+            // Chrome passes "chrome-extension://EXTENSION_ID/" as the first argument
+            // This is the reliable, production-grade way to detect native messaging
+            let is_native_messaging = std::env::args()
+                .nth(1)
+                .map(|arg| arg.starts_with("chrome-extension://"))
+                .unwrap_or(false);
+
+            if is_native_messaging || args.native_messaging {
+                eprintln!("[tur] Starting in native messaging mode");
+                let rx = native_host::start_native_messaging_thread();
+                let app_handle = app.handle().clone();
+
+                // Spawn thread to handle download actions from native messaging
+                std::thread::spawn(move || {
+                    eprintln!("[tur] Download action handler thread started");
+                    while let Ok(action) = rx.recv() {
+                        eprintln!("[tur] Received action from native messaging");
+                        match action {
+                            native_host::HostAction::OpenDownload {
+                                url,
+                                format_id,
+                                title,
+                                filesize,
+                                ext,
+                                video_stream_url,
+                                audio_stream_url,
+                            } => {
+                                eprintln!("[tur] OpenDownload action received, url: {}", url);
+                                eprintln!("[tur] Calling open_download_window_internal...");
+                                open_download_window_internal(
+                                    app_handle.clone(),
+                                    url,
+                                    format_id,
+                                    None, // audio_id
+                                    title,
+                                    filesize,
+                                    ext,
+                                    video_stream_url,
+                                    audio_stream_url,
+                                );
+                                eprintln!("[tur] open_download_window_internal returned");
+                            }
+                        }
+                    }
+                    eprintln!("[tur] Download action handler thread ended");
+                });
+            }
+
             // Handle deep links from startup - open download window
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
@@ -150,7 +200,7 @@ pub fn run() {
                 }
             }
 
-            // Handle direct download URL from CLI (from tur-host)
+            // Handle direct download URL from CLI (from extension)
             if let Some(url) = &args.download_url {
                 open_download_window_internal(
                     app.handle().clone(),

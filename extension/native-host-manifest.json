@@ -1,9 +1,9 @@
 {
     "name": "com.greykaizen.tur",
     "description": "tur download manager native messaging host",
-    "path": "/usr/local/bin/tur-host",
+    "path": "/home/kaizen/Repo/Rust🦀/tur/src-tauri/target/release/tur",
     "type": "stdio",
     "allowed_origins": [
-        "chrome-extension://EXTENSION_ID_HERE/"
+        "chrome-extension://fpppcogipofcgkodapgdljfgpjohlncf/"
     ]
 }

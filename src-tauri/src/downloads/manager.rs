@@ -143,12 +143,12 @@ impl DownloadManager {
             let url_str = url.as_str();
 
             // Fetch headers
-            println!("  🔍 HEAD request to: {}", url_str);
+            eprintln!("  🔍 HEAD request to: {}", url_str);
             let response = client.head(url_str).send().await.map_err(|e| {
-                println!("  ❌ HEAD request failed: {}", e);
+                eprintln!("  ❌ HEAD request failed: {}", e);
                 e.to_string()
             })?;
-            println!("  ✅ HEAD response status: {}", response.status());
+            eprintln!("  ✅ HEAD response status: {}", response.status());
             let hdrs = response.headers();
 
             // Use custom filename if provided, otherwise extract from headers or URL
@@ -189,13 +189,13 @@ impl DownloadManager {
                 resume_supported,
             )
             .map_err(|e| {
-                println!("  ❌ DB insert failed: {}", e);
+                eprintln!("  ❌ DB insert failed: {}", e);
                 e.to_string()
             })?;
-            println!("  ✅ DB insert success, id: {}", id);
+            eprintln!("  ✅ DB insert success, id: {}", id);
 
             // Emit to frontend
-            println!("  📡 Emitting queue_download event for: {}", filename);
+            eprintln!("  📡 Emitting queue_download event for: {}", filename);
             let num_connections = if resume_supported {
                 settings.download.num_threads
             } else {
@@ -216,7 +216,7 @@ impl DownloadManager {
             );
 
             // Create and run download
-            println!("  🚀 Starting download, size: {:?}", size);
+            eprintln!("  🚀 Starting download, size: {:?}", size);
             let download = Download::new(size.unwrap_or(0) as usize, settings.download.num_threads);
             if let Err(e) = download.save(app, &id) {
                 eprintln!("Failed to save download state: {}", e);
@@ -231,7 +231,7 @@ impl DownloadManager {
                 app,
                 settings,
             );
-            println!("  ✅ Download started with {} handles", handles.len());
+            eprintln!("  ✅ Download started with {} handles", handles.len());
             self.add_instance(id, handles);
         }
         Ok(())
@@ -449,10 +449,10 @@ pub async fn handle_download_request(
     manager: tauri::State<'_, DownloadManager>,
     request: DownloadRequest,
 ) -> Result<(), String> {
-    println!("📥 handle_download_request called: {:?}", request);
+    eprintln!("📥 handle_download_request called: {:?}", request);
     let result = manager.handle_request(&app, request).await;
     if let Err(ref e) = result {
-        println!("❌ handle_download_request error: {}", e);
+        eprintln!("❌ handle_download_request error: {}", e);
     }
     result
 }

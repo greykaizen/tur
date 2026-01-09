@@ -4,6 +4,7 @@ use std::env;
 pub struct AppArgs {
     pub minimized: bool,
     pub debug: bool,
+    pub native_messaging: bool,
     pub deep_link: Option<String>,
     pub download_url: Option<String>,
     pub format_id: Option<String>,
@@ -22,6 +23,7 @@ impl Default for AppArgs {
         Self {
             minimized: false,
             debug: false,
+            native_messaging: false,
             deep_link: None,
             download_url: None,
             format_id: None,
@@ -50,6 +52,9 @@ impl AppArgs {
                 }
                 "--debug" | "-d" => {
                     parsed.debug = true;
+                }
+                "--native-messaging" => {
+                    parsed.native_messaging = true;
                 }
                 "--help" | "-h" => {
                     parsed.help = true;
@@ -129,6 +134,9 @@ impl AppArgs {
                 }
                 "--debug" | "-d" => {
                     parsed.debug = true;
+                }
+                "--native-messaging" => {
+                    parsed.native_messaging = true;
                 }
                 "--help" | "-h" => {
                     parsed.help = true;
