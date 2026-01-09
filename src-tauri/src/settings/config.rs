@@ -27,6 +27,14 @@ pub struct AppConfig {
     pub autostart: bool,
     /// Resume incomplete downloads when app starts
     pub auto_resume: bool,
+    /// Page to show on startup: "home", "details", "history"
+    pub startup_page: String,
+    /// Action on new download: "go_to_home", "stay_on_page"
+    pub new_download_action: String,
+    /// Seconds to display completion state before dismissing (0-30)
+    pub completion_display_duration: u8,
+    /// Action after completion: "popup", "notification", "none"
+    pub completion_action: String,
 }
 
 /// Keyboard shortcut bindings
@@ -138,6 +146,10 @@ impl Default for AppConfig {
             show_welcome_screen: true,
             autostart: false,
             auto_resume: false,
+            startup_page: "home".into(),
+            new_download_action: "go_to_home".into(),
+            completion_display_duration: 5,
+            completion_action: "popup".into(),
         }
     }
 }

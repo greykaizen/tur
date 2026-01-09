@@ -76,6 +76,8 @@ pub struct NewDownloadItem {
     pub url: Url,
     /// Optional filename override - if None, extract from headers/URL
     pub filename: Option<String>,
+    /// Optional queue ID to assign
+    pub queue_id: Option<Uuid>,
 }
 
 /// Download request types from frontend
@@ -187,6 +189,7 @@ impl DownloadManager {
                 etag.as_deref(),
                 last_modified.as_deref(),
                 resume_supported,
+                item.queue_id.as_ref(),
             )
             .map_err(|e| {
                 eprintln!("  ❌ DB insert failed: {}", e);
@@ -212,6 +215,7 @@ impl DownloadManager {
                     "resume_supported": resume_supported,
                     "num_connections": num_connections,
                     "status": "queued",
+                    "queue_id": item.queue_id.map(|q| q.to_string()),
                 }),
             );
 
@@ -512,4 +516,11 @@ pub async fn request_shutdown(
     app.exit(0);
 
     Ok(())
+}
+
+/// Tauri command for deleting a download from history
+#[tauri::command]
+pub fn delete_download_history(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let db = crate::database::Database::initialize(&app).map_err(|e| e.to_string())?;
+    db.delete_download(&id).map_err(|e| e.to_string())
 }

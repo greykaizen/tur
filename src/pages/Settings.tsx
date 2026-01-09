@@ -4,7 +4,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { useSettings } from '@/contexts/SettingsContext';
+import { ChevronDown } from 'lucide-react';
 
 export default function Settings() {
   const { settings, set, ready } = useSettings();
@@ -126,6 +133,109 @@ export default function Settings() {
                       onCheckedChange={(checked) => set('session.metadata', checked)}
                     />
                   </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Startup Page</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Page to open on application launch
+                      </p>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="w-[140px] justify-between">
+                          {settings.app.startup_page === 'home' ? 'Home' :
+                            settings.app.startup_page === 'details' ? 'Details' : 'History'}
+                          <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-[140px]">
+                        <DropdownMenuItem onSelect={() => set('app.startup_page', 'home')}>
+                          Home
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => set('app.startup_page', 'details')}>
+                          Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => set('app.startup_page', 'history')}>
+                          History
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>On New Download</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Action when starting a new download
+                      </p>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="w-[140px] justify-between">
+                          {settings.app.new_download_action === 'go_to_home' ? 'Go to Home' : 'Stay'}
+                          <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-[140px]">
+                        <DropdownMenuItem onSelect={() => set('app.new_download_action', 'go_to_home')}>
+                          Go to Home
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => set('app.new_download_action', 'stay_on_page')}>
+                          Stay
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+
+                  {/* Completion Timer Duration */}
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Completion Display Time</Label>
+                      <p className="text-sm text-muted-foreground">
+                        How long to show completed download (0 = immediate popup)
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="0"
+                        max="30"
+                        value={settings.app.completion_display_duration}
+                        onChange={(e) => set('app.completion_display_duration', parseInt(e.target.value))}
+                        className="w-24"
+                      />
+                      <span className="text-sm font-medium w-8">{settings.app.completion_display_duration}s</span>
+                    </div>
+                  </div>
+
+                  {/* Completion Action */}
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>On Download Complete</Label>
+                      <p className="text-sm text-muted-foreground">
+                        What happens after completion timer
+                      </p>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="w-[140px] justify-between">
+                          {settings.app.completion_action === 'popup' ? 'Show Popup' :
+                            settings.app.completion_action === 'notification' ? 'Notification' : 'Nothing'}
+                          <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-[140px]">
+                        <DropdownMenuItem onSelect={() => set('app.completion_action', 'popup')}>
+                          Show Popup
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => set('app.completion_action', 'notification')}>
+                          Notification
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => set('app.completion_action', 'none')}>
+                          Nothing
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 </div>
               </div>
             </TabsContent>
@@ -144,8 +254,8 @@ export default function Settings() {
                       <button
                         onClick={() => set('app.sidebar', 'left')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.sidebar === 'left'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
                           }`}
                       >
                         Left
@@ -153,8 +263,8 @@ export default function Settings() {
                       <button
                         onClick={() => set('app.sidebar', 'right')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.sidebar === 'right'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
                           }`}
                       >
                         Right
@@ -172,8 +282,8 @@ export default function Settings() {
                       <button
                         onClick={() => set('app.button_label', 'text')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'text'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
                           }`}
                       >
                         Text
@@ -181,8 +291,8 @@ export default function Settings() {
                       <button
                         onClick={() => set('app.button_label', 'icon')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'icon'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
                           }`}
                       >
                         Icon
@@ -190,8 +300,8 @@ export default function Settings() {
                       <button
                         onClick={() => set('app.button_label', 'both')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${settings.app.button_label === 'both'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
                           }`}
                       >
                         Both

@@ -7,7 +7,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 pub mod args;
 pub mod database;
 pub mod downloads;
+pub mod menu;
 pub mod native_host;
+pub mod queue;
 pub mod settings;
 pub mod tray;
 
@@ -80,6 +82,16 @@ pub fn run() {
             downloads::manager::active_download_count,
             downloads::manager::get_download_history,
             downloads::manager::request_shutdown,
+            downloads::manager::delete_download_history,
+            delete_download_file,
+            open_path,
+            queue::create_queue,
+            queue::get_queues,
+            queue::delete_queue,
+            queue::check_queue_progression,
+            queue::add_to_queue,
+            queue::remove_from_queue,
+            queue::update_queue_status,
         ])
         .on_window_event(|window, event| {
             // Handle window close request based on settings
@@ -98,10 +110,18 @@ pub fn run() {
                 // Download windows and other windows close without intervention
             }
         })
+        .on_menu_event(|app, event| {
+            menu::handle_menu_event(app, event.id().as_ref());
+        })
         .setup(|app| {
             // Initialize and manage DownloadManager
             let download_manager = downloads::DownloadManager::new();
             app.manage(download_manager);
+
+            // Set up global menu
+            if let Ok(menu) = menu::create_menu(app.handle()) {
+                let _ = app.set_menu(menu);
+            }
 
             // Set up system tray based on settings
             if let Err(e) = tray::setup_tray(app.handle()) {
@@ -452,4 +472,47 @@ async fn open_download_window(
     }
 
     Ok(())
+}
+
+/// Open a path in system explorer or default app
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Delete a file from disk
+#[tauri::command]
+fn delete_download_file(file_path: String) -> Result<(), String> {
+    use std::fs;
+    use std::path::Path;
+
+    let path = Path::new(&file_path);
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+        eprintln!("[tur] Deleted file: {}", file_path);
+        Ok(())
+    } else {
+        Err("File not found".to_string())
+    }
 }

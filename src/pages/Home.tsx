@@ -1,27 +1,133 @@
 import { useState, useRef, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
-import { Paperclip, Download, X, Play, Pause, FolderOpen } from 'lucide-react';
+import { CompletionDialog } from '@/components/CompletionDialog';
+import { Paperclip, Download, X, Play, Pause, FolderOpen, ChevronDown } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useDownloadSelection } from '@/contexts/DownloadSelectionContext';
 import { useDownloads, formatSize, formatSpeed, formatTimeLeft } from '@/hooks/useDownloads';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DownloadOptionsDialog } from "@/components/DownloadOptionsDialog";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+
+
+type FinishAction = 'none' | 'open_file' | 'open_folder' | 'shutdown_app' | 'shutdown_system' | 'sleep';
 
 export default function Home() {
+  const location = useLocation();
   // Get selected download state from context (single source of truth)
   const { selectedDownload, setSelectedDownloadId, showWelcomeScreen } = useDownloadSelection();
+
+  // Handle navigation from Detail page
+  useEffect(() => {
+    if (location.state?.download?.id) {
+      setSelectedDownloadId(location.state.download.id);
+      // Clear state to avoid re-selecting on re-renders if desired, 
+      // but react-router state is persistent so this is fine for now.
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state, setSelectedDownloadId]);
 
   // Empty state input handling
   const [urlTags, setUrlTags] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+
+  const [showOptionsDialog, setShowOptionsDialog] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+
 
   const { settings, ready } = useSettings();
   const showDownloadProgress = ready ? settings.app.show_download_progress : true;
   const showSegmentProgress = ready ? settings.app.show_segment_progress : true;
 
-  // Get downloads for actions (startDownloads, pauseDownload, cancelDownload)
-  const { downloads, startDownloads, pauseDownload, cancelDownload } = useDownloads();
+  // Get downloads for actions (startDownloads, pauseDownload, cancelDownload, resumeDownloads)
+  const { downloads, startDownloads, pauseDownload, cancelDownload, resumeDownloads } = useDownloads();
+
+  // Completion timer state
+  const [completionTimer, setCompletionTimer] = useState<number | null>(null);
+  const completionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const completionDisplayDuration = ready ? settings.app.completion_display_duration : 5;
+  const completionAction = ready ? settings.app.completion_action : 'popup';
+
+  // Completed download for popup
+  const [completedDownload, setCompletedDownload] = useState<{
+    filename: string;
+    size: number | null;
+    destination: string;
+  } | null>(null);
+
+  // Per-download finish action (do nothing, open file, open folder)
+  const [finishAction, setFinishAction] = useState<FinishAction>('none');
+
+  // Track downloads that have already shown completion (to avoid re-triggering)
+  const completionShownRef = useRef<Set<string>>(new Set());
+
+  // Detect download completion and start timer (only for new completions)
+  useEffect(() => {
+    if (selectedDownload?.status === 'completed' || (selectedDownload && selectedDownload.progress >= 100)) {
+      // Only start timer if this download hasn't shown completion yet
+      if (!completionShownRef.current.has(selectedDownload.id)) {
+        if (completionTimer === null) {
+          if (completionDisplayDuration > 0) {
+            setCompletionTimer(completionDisplayDuration);
+          } else {
+            // Duration is 0 = immediate popup
+            setCompletionTimer(0);
+          }
+        }
+      }
+    } else {
+      // Reset timer if download is not completed
+      setCompletionTimer(null);
+      if (completionTimerRef.current) {
+        clearInterval(completionTimerRef.current);
+        completionTimerRef.current = null;
+      }
+    }
+  }, [selectedDownload?.status, selectedDownload?.progress, selectedDownload?.id, completionDisplayDuration, completionTimer]);
+
+  // Countdown timer effect
+  useEffect(() => {
+    if (completionTimer !== null && completionTimer > 0) {
+      completionTimerRef.current = setTimeout(() => {
+        setCompletionTimer(prev => (prev !== null ? prev - 1 : null));
+      }, 1000);
+    } else if (completionTimer === 0 && selectedDownload) {
+      // Timer expired - mark as shown to prevent re-triggering
+      completionShownRef.current.add(selectedDownload.id);
+
+      // Trigger popup or notification based on setting
+      if (completionAction === 'popup') {
+        setCompletedDownload({
+          filename: selectedDownload.filename,
+          size: selectedDownload.size,
+          destination: selectedDownload.destination,
+        });
+      }
+      // TODO: Handle 'notification' action with Tauri notification API
+
+      const nextDownload = downloads.find(d =>
+        d.status !== 'completed' && d.progress < 100 && d.id !== selectedDownload.id
+      );
+      setSelectedDownloadId(nextDownload?.id || null);
+      setCompletionTimer(null);
+    }
+
+    return () => {
+      if (completionTimerRef.current) {
+        clearTimeout(completionTimerRef.current);
+      }
+    };
+  }, [completionTimer, downloads, selectedDownload, setSelectedDownloadId, completionAction]);
 
   // Focus input in empty state
   useEffect(() => {
@@ -114,6 +220,10 @@ export default function Home() {
   };
 
   const handleDownload = async () => {
+    setShowOptionsDialog(true);
+  };
+
+  const handleConfirmDownload = async (queueId: string | null, _mode?: 'sequential' | 'concurrent', _parallelCount?: number) => {
     const allUrls = [...urlTags];
     if (inputValue.trim()) {
       allUrls.push(inputValue.trim());
@@ -121,27 +231,29 @@ export default function Home() {
 
     if (allUrls.length === 0) return;
 
-    // Call backend to start downloads
-    await startDownloads(allUrls);
+    await startDownloads(allUrls.map(url => ({
+      url,
+      queue_id: queueId
+    })));
 
     setUrlTags([]);
     setInputValue('');
-
-    // Context will auto-select first active download when downloads update
   };
 
   // Empty State - No download selected
   if (!selectedDownload) {
-    // Welcome Screen - First launch, fancy UI with logo and input
-    if (showWelcomeScreen) {
+    // Show Input UI (Welcome Screen OR if User interacted via Drag/Drop/Type)
+    if (showWelcomeScreen || urlTags.length > 0 || inputValue) {
       return (
-        <PageTransition className="h-full w-full overflow-hidden relative">
+        <PageTransition
+          className="h-full w-full overflow-hidden relative"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           {/* Content */}
           <div
             className="relative h-full flex flex-col px-4 pt-8"
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
           >
             {/* Logo + Name at Top - Golden Ratio Sizing */}
             <div className="flex items-center justify-center gap-3 mb-4">
@@ -230,18 +342,26 @@ export default function Home() {
               className="hidden"
             />
           </div>
+          <DownloadOptionsDialog
+            open={showOptionsDialog}
+            onOpenChange={setShowOptionsDialog}
+            urls={[...urlTags, inputValue.trim()].filter(Boolean)}
+            onStart={handleConfirmDownload}
+          />
         </PageTransition>
       );
     }
 
     // In-App Empty State - Simple wireframe style
     return (
-      <PageTransition className="h-full w-full overflow-hidden relative">
+      <PageTransition
+        className="h-full w-full overflow-hidden relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <div
           className="relative h-full flex flex-col items-center pt-5 p-4"
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           <div className={`text-center transition-all ${isDragging ? 'scale-105' : ''}`}>
             <p className="text-muted-foreground text-sm leading-relaxed">
@@ -266,139 +386,265 @@ export default function Home() {
 
   // Download View State - Showing selected download details
   return (
-    <PageTransition className="h-full w-full overflow-hidden relative">
-      {/* Opaque Progress Background */}
-      <div
-        className="absolute inset-0 bg-green-500/5 transition-all duration-300"
-        style={{ width: `${selectedDownload.progress}%` }}
-      />
+    <>
+      <PageTransition className="h-full w-full overflow-hidden relative">
+        {/* Opaque Progress Background */}
+        <div
+          className="absolute inset-0 bg-green-500/5 transition-all duration-300"
+          style={{ width: `${selectedDownload.progress}%` }}
+        />
 
-      <div className="relative h-full flex flex-col p-4 space-y-4">
-        {/* Download Header */}
-        <div className="space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0 space-y-2">
-              <h2 className="text-lg font-semibold truncate">{selectedDownload.filename}</h2>
-              <p className="text-xs text-muted-foreground truncate">{selectedDownload.url}</p>
+        <div className="relative h-full flex flex-col p-4">
+          <Tabs defaultValue="status" className="flex-1 flex flex-col space-y-3">
 
-              {/* Stats - Aligned values */}
-              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm max-w-md">
-                <span className="font-medium text-muted-foreground">Size:</span>
-                <span className="text-foreground">{selectedDownload.size ? formatSize(selectedDownload.size) : 'Unknown'}</span>
-
-                <span className="font-medium text-muted-foreground">Downloaded:</span>
-                <span className="text-foreground">{formatSize(selectedDownload.downloaded)}</span>
-
-                <span className="font-medium text-muted-foreground">Speed:</span>
-                <span className="text-foreground">{formatSpeed(selectedDownload.speed)}</span>
-
-                <span className="font-medium text-muted-foreground">Time Left:</span>
-                <span className="text-foreground">{formatTimeLeft(selectedDownload.downloaded, selectedDownload.size || 0, selectedDownload.speed, selectedDownload.id)}</span>
-
-                <span className="font-medium text-muted-foreground">Connections:</span>
-                <span className="text-foreground">
-                  {selectedDownload.num_connections > 1 ? `${selectedDownload.num_connections} threads` : 'Single'}
-                </span>
-
-                <span className="font-medium text-muted-foreground">Resume:</span>
-                <span className={selectedDownload.resume_supported ? "text-foreground" : "text-red-400/70"}>
-                  {selectedDownload.resume_supported ? 'Yes' : 'No'}
-                </span>
-              </div>
+            {/* Tabs List (Compact) - Now at Top */}
+            <div>
+              <TabsList className="h-8 p-0 bg-muted/30 gap-1 rounded-md px-1 w-auto inline-flex">
+                <TabsTrigger value="status" className="h-6 text-xs px-3 data-[state=active]:bg-background data-[state=active]:shadow-sm">Status</TabsTrigger>
+                <TabsTrigger value="options" className="h-6 text-xs px-3 data-[state=active]:bg-background data-[state=active]:shadow-sm">Options</TabsTrigger>
+                <TabsTrigger value="speed" className="h-6 text-xs px-3 data-[state=active]:bg-background data-[state=active]:shadow-sm">Speed</TabsTrigger>
+              </TabsList>
             </div>
 
-            {/* Percentage Badge - Rounded on left, square on right */}
-            <div className="shrink-0 bg-muted/40 px-4 py-2 rounded-l-lg border-r-4 border-green-500">
-              <span className="text-2xl font-bold text-green-600 dark:text-green-500">
-                {Math.round(selectedDownload.progress)}%
-              </span>
-            </div>
-          </div>
-        </div>
+            {/* Tab Contents */}
+            <div className="flex-1 relative min-h-0">
+              <TabsContent value="status" className="mt-0 space-y-4 h-full">
+                {/* Download Header - Only in Status tab */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <h2 className="text-lg font-semibold truncate">{selectedDownload.filename}</h2>
+                    <p className="text-xs text-muted-foreground truncate">{selectedDownload.url}</p>
+                  </div>
+                  {/* Percentage (Right) */}
+                  <div className="shrink-0 bg-muted/40 px-4 py-2 rounded-lg border border-green-500/20 bg-green-500/5">
+                    <span className="text-xl font-bold text-green-600 dark:text-green-500">
+                      {Math.round(selectedDownload.progress)}%
+                    </span>
+                  </div>
+                </div>
 
-        {/* Action Buttons - Above progress bars */}
-        <div className="flex justify-end gap-2">
-          {selectedDownload.status === 'completed' || selectedDownload.progress >= 100 ? (
-            // Completed: Show Open Folder and Close buttons
-            <>
-              <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
-                <FolderOpen className="size-3.5" />
-                <span>Open Folder</span>
-              </button>
-              <button
-                onClick={() => {
-                  // Find the next active download or clear selection
-                  const activeDownload = downloads.find((d) =>
-                    d.status !== 'completed' && d.progress < 100 && d.id !== selectedDownload.id
-                  );
-                  setSelectedDownloadId(activeDownload?.id || null);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-border hover:bg-muted transition-colors"
-              >
-                <X className="size-3.5" />
-                <span>Close</span>
-              </button>
-            </>
-          ) : (
-            // Downloading/Paused: Show Pause/Resume and Cancel buttons
-            <>
-              {selectedDownload.status === 'downloading' ? (
-                <button
-                  onClick={() => pauseDownload(selectedDownload.id)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-                >
-                  <Pause className="size-3.5" />
-                  <span>Pause</span>
-                </button>
-              ) : (
+                <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm max-w-md">
+                  <span className="font-medium text-muted-foreground">Size:</span>
+                  <span className="text-foreground">
+                    {selectedDownload.size ? formatSize(selectedDownload.size) : 'Unknown'}
+                    <span className="text-muted-foreground ml-1">
+                      ({formatSize(selectedDownload.downloaded)})
+                    </span>
+                  </span>
+
+                  <span className="font-medium text-muted-foreground">Speed:</span>
+                  <span className="text-foreground">{formatSpeed(selectedDownload.speed)}</span>
+
+                  <span className="font-medium text-muted-foreground">Time Left:</span>
+                  <span className="text-foreground">{formatTimeLeft(selectedDownload.downloaded, selectedDownload.size || 0, selectedDownload.speed, selectedDownload.id)}</span>
+
+                  <span className="font-medium text-muted-foreground">Connections:</span>
+                  <span className="text-foreground">
+                    {selectedDownload.num_connections > 1 ? `${selectedDownload.num_connections} threads` : 'Single'}
+                  </span>
+
+                  <span className="font-medium text-muted-foreground">Resume:</span>
+                  <span className={selectedDownload.resume_supported ? "text-foreground" : "text-red-400/70"}>
+                    {selectedDownload.resume_supported ? 'Yes' : 'No'}
+                  </span>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="options" className="mt-0 space-y-4 pt-2">
+                <div className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-muted-foreground">On Completion:</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger className="flex w-full justify-between items-center gap-2 text-sm px-3 py-2 rounded-md border border-input bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors">
+                      <span>
+                        {finishAction === 'none' && 'Do Nothing'}
+                        {finishAction === 'open_file' && 'Open File'}
+                        {finishAction === 'open_folder' && 'Open Folder'}
+                        {finishAction === 'shutdown_app' && 'Shutdown App'}
+                        {finishAction === 'shutdown_system' && 'Shutdown System'}
+                        {finishAction === 'sleep' && 'Sleep'}
+                      </span>
+                      <ChevronDown className="h-4 w-4 opacity-50" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+                      <DropdownMenuItem onSelect={() => setFinishAction('none')}>
+                        Do Nothing
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setFinishAction('open_file')}>
+                        Open File
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setFinishAction('open_folder')}>
+                        Open Folder
+                      </DropdownMenuItem>
+                      <div className="h-px bg-border my-1" />
+                      <DropdownMenuItem onSelect={() => setFinishAction('shutdown_app')}>
+                        Shutdown App
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setFinishAction('shutdown_system')}>
+                        Shutdown System
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setFinishAction('sleep')}>
+                        Sleep
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <p className="text-xs text-muted-foreground">
+                    Action to perform when this download finishes.
+                  </p>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="speed" className="mt-0 space-y-4 pt-2">
+                <div className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-muted-foreground">Speed Limit:</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger className="flex w-full justify-between items-center gap-2 text-sm px-3 py-2 rounded-md border border-input bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors">
+                      <span>Unlimited</span>
+                      <ChevronDown className="h-4 w-4 opacity-50" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+                      <DropdownMenuItem>Unlimited</DropdownMenuItem>
+                      <div className="h-px bg-border my-1" />
+                      <DropdownMenuItem>10 MB/s</DropdownMenuItem>
+                      <DropdownMenuItem>5 MB/s</DropdownMenuItem>
+                      <DropdownMenuItem>2 MB/s</DropdownMenuItem>
+                      <DropdownMenuItem>1 MB/s</DropdownMenuItem>
+                      <DropdownMenuItem>512 KB/s</DropdownMenuItem>
+                      <DropdownMenuItem>256 KB/s</DropdownMenuItem>
+                      <DropdownMenuItem>128 KB/s</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <p className="text-xs text-muted-foreground">
+                    Limit download speed for this file.
+                  </p>
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
+
+          {/* Action Buttons - Above progress bars */}
+          <div className="flex justify-end gap-2">
+            {selectedDownload.status === 'completed' || selectedDownload.progress >= 100 ? (
+              // Completed: Show Timer, Open Folder, and Close
+              <>
+                {/* Circular Countdown Timer - Above buttons */}
+                {completionTimer !== null && completionDisplayDuration > 0 && (
+                  <div className="relative flex items-center justify-center w-9 h-9">
+                    <svg className="w-9 h-9 -rotate-90" viewBox="0 0 32 32">
+                      <circle
+                        cx="16"
+                        cy="16"
+                        r="13"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        className="text-muted/20"
+                      />
+                      <circle
+                        cx="16"
+                        cy="16"
+                        r="13"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeDasharray={82}
+                        strokeDashoffset={82 - (82 * completionTimer / completionDisplayDuration)}
+                        strokeLinecap="round"
+                        className="text-white transition-all duration-1000"
+                      />
+                    </svg>
+                    <span className="absolute text-xs font-semibold text-foreground">
+                      {completionTimer}
+                    </span>
+                  </div>
+                )}
                 <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
-                  <Play className="size-3.5" />
-                  <span>Resume</span>
+                  <FolderOpen className="size-3.5" />
+                  <span>Open Folder</span>
                 </button>
+                <button
+                  onClick={() => {
+                    // Find the next active download or clear selection
+                    const activeDownload = downloads.find((d) =>
+                      d.status !== 'completed' && d.progress < 100 && d.id !== selectedDownload.id
+                    );
+                    setSelectedDownloadId(activeDownload?.id || null);
+                    setCompletionTimer(null);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-border hover:bg-muted transition-colors"
+                >
+                  <X className="size-3.5" />
+                  <span>Close</span>
+                </button>
+              </>
+            ) : (
+              // Downloading/Paused: Show Pause/Resume and Cancel buttons
+              <>
+                {selectedDownload.status === 'downloading' ? (
+                  <button
+                    onClick={() => pauseDownload(selectedDownload.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  >
+                    <Pause className="size-3.5" />
+                    <span>Pause</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => resumeDownloads([selectedDownload.id])}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  >
+                    <Play className="size-3.5" />
+                    <span>Resume</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    cancelDownload(selectedDownload.id);
+                    setSelectedDownloadId(null);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-destructive text-destructive hover:bg-destructive/10 transition-colors"
+                >
+                  <X className="size-3.5" />
+                  <span>Cancel</span>
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Progress Bars - Hidden when completed, less rounded */}
+          {(selectedDownload.status !== 'completed' && selectedDownload.progress < 100) && (
+            <div className="space-y-3">
+              {showDownloadProgress && (
+                <div className="relative w-full h-6 bg-muted/40 border border-border rounded-sm overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-green-500/50 dark:bg-green-500/40 transition-all duration-300"
+                    style={{ width: `${selectedDownload.progress}%` }}
+                  />
+                </div>
               )}
-              <button
-                onClick={() => {
-                  cancelDownload(selectedDownload.id);
-                  setSelectedDownloadId(null);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-destructive text-destructive hover:bg-destructive/10 transition-colors"
-              >
-                <X className="size-3.5" />
-                <span>Cancel</span>
-              </button>
-            </>
+
+              {showSegmentProgress && selectedDownload.segments && selectedDownload.segments.length > 0 && (
+                <div className="relative w-full h-6 bg-muted/40 border border-border rounded-sm overflow-hidden">
+                  {selectedDownload.segments.map((segment: any, index: number) => (
+                    <div
+                      key={index}
+                      className="absolute inset-y-0 bg-blue-400/70 dark:bg-blue-400/60"
+                      style={{
+                        left: `${segment.start}%`,
+                        width: `${segment.end - segment.start}%`
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
-
-        {/* Progress Bars - Hidden when completed, less rounded */}
-        {(selectedDownload.status !== 'completed' && selectedDownload.progress < 100) && (
-          <div className="space-y-3">
-            {showDownloadProgress && (
-              <div className="relative w-full h-6 bg-muted/40 border border-border rounded-sm overflow-hidden">
-                <div
-                  className="absolute inset-y-0 left-0 bg-green-500/50 dark:bg-green-500/40 transition-all duration-300"
-                  style={{ width: `${selectedDownload.progress}%` }}
-                />
-              </div>
-            )}
-
-            {showSegmentProgress && selectedDownload.segments && selectedDownload.segments.length > 0 && (
-              <div className="relative w-full h-6 bg-muted/40 border border-border rounded-sm overflow-hidden">
-                {selectedDownload.segments.map((segment: any, index: number) => (
-                  <div
-                    key={index}
-                    className="absolute inset-y-0 bg-blue-400/70 dark:bg-blue-400/60"
-                    style={{
-                      left: `${segment.start}%`,
-                      width: `${segment.end - segment.start}%`
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </PageTransition>
+      </PageTransition >
+      <CompletionDialog
+        open={completedDownload !== null}
+        onClose={() => setCompletedDownload(null)}
+        download={completedDownload}
+      />
+    </>
   );
 }

@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+import { useSettings } from '@/contexts/SettingsContext';
 import { Paperclip, Download, X } from 'lucide-react';
 import { useDownloads } from '@/hooks/useDownloads';
 
@@ -9,6 +11,8 @@ interface AddDownloadDialogProps {
 }
 
 export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogProps) {
+  const navigate = useNavigate();
+  const { settings } = useSettings();
   const [urlTags, setUrlTags] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -125,11 +129,15 @@ export default function AddDownloadDialog({ open, onClose }: AddDownloadDialogPr
     if (allUrls.length === 0) return;
 
     // Call backend to start downloads
-    await startDownloads(allUrls);
+    await startDownloads(allUrls.map(url => ({ url })));
 
     onClose();
     setUrlTags([]);
     setInputValue('');
+
+    if (settings.app.new_download_action === 'go_to_home') {
+      navigate('/');
+    }
   };
 
   const handleClose = () => {

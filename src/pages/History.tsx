@@ -1,8 +1,20 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import PageTransition from '@/components/PageTransition';
 import { MoreVertical, FolderOpen, Trash2, Download, Play, X, CheckCircle2, Clock, Loader2, List, Grid3x3, ChevronDown, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDownloads, formatSize } from '@/hooks/useDownloads';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 
 type FilterType = 'all' | 'completed' | 'incomplete';
 type ViewType = 'list' | 'grid';
@@ -13,9 +25,12 @@ export default function History() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string, path: string } | null>(null);
+  const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Get downloads from hook
-  const { downloads, loadHistory } = useDownloads();
+  const { downloads, loadHistory, resumeDownloads, removeDownload } = useDownloads();
 
   // Load history from database on mount
   useEffect(() => {
@@ -114,14 +129,78 @@ export default function History() {
     setOpenMenuId(null);
   };
 
-  const handleBulkDelete = () => {
-    toast.success(`${selectedIds.size} items deleted`);
+  const handleBulkDelete = async () => {
+    try {
+      await Promise.all(Array.from(selectedIds).map(id => invoke('delete_download_history', { id })));
+      toast.success(`${selectedIds.size} items removed from history`);
+      loadHistory();
+      setSelectedIds(new Set());
+    } catch (e) {
+      toast.error('Failed to delete items');
+    }
+  };
+
+  const handleBulkResume = async () => {
+    await resumeDownloads(Array.from(selectedIds));
+    toast.success(`${selectedIds.size} downloads resumed`);
     setSelectedIds(new Set());
   };
 
-  const handleBulkResume = () => {
-    toast.success(`${selectedIds.size} downloads resumed`);
-    setSelectedIds(new Set());
+
+
+  const handleRedownload = async (url: string) => {
+    try {
+      await invoke('open_download_window', { url });
+      setOpenMenuId(null);
+      // Navigation happens via AddDownloadDialog based on new_download_action setting
+    } catch (e) {
+      toast.error('Failed to open download window');
+    }
+  };
+
+  const handleOpenLocation = async (path: string) => {
+    try {
+      await invoke('open_path', { path });
+      setOpenMenuId(null);
+    } catch (e) {
+      toast.error('Failed to open location: ' + e);
+    }
+  };
+
+  const handleDeleteClick = (id: string, path: string) => {
+    setDeleteTarget({ id, path });
+    // Default to false for "Also delete from disk" or true if preferred? 
+    // User asked: "Show Delete, inside the confirmation dialog we show delete the files from disk as well"
+    setDeleteFileFromDisk(false);
+    setDeleteDialogOpen(true);
+    setOpenMenuId(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+
+    try {
+      // If checkbox is checked, delete physical file first
+      if (deleteFileFromDisk) {
+        await invoke('delete_download_file', { filePath: deleteTarget.path });
+      }
+
+      // Always remove from history
+      await invoke('delete_download_history', { id: deleteTarget.id });
+
+      // Update UI state instantly
+      removeDownload(deleteTarget.id);
+
+      toast.success(deleteFileFromDisk ? 'Deleted file and removed from history' : 'Removed from history', {
+        style: deleteFileFromDisk ? { background: '#ef4444', color: 'white', border: 'none' } : undefined
+      });
+
+    } catch (e) {
+      toast.error('Failed to delete: ' + e);
+    } finally {
+      setDeleteDialogOpen(false);
+      setDeleteTarget(null);
+    }
   };
 
   return (
@@ -307,7 +386,10 @@ export default function History() {
                           <div className="absolute right-0 top-full mt-1 w-44 bg-popover border border-border rounded-md shadow-lg z-[95]">
                             <div className="py-1">
                               {download.status === 'completed' && (
-                                <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors">
+                                <button
+                                  onClick={() => handleRedownload(download.url)}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
+                                >
                                   <Download className="size-4" />
                                   Redownload
                                 </button>
@@ -324,7 +406,10 @@ export default function History() {
                                   Cancel
                                 </button>
                               )}
-                              <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors">
+                              <button
+                                onClick={() => handleOpenLocation(download.destination)}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
+                              >
                                 <FolderOpen className="size-4" />
                                 Open Location
                               </button>
@@ -336,7 +421,10 @@ export default function History() {
                                 Copy Link
                               </button>
                               <div className="border-t border-border my-1" />
-                              <button className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors">
+                              <button
+                                onClick={() => handleDeleteClick(download.id, download.destination)}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                              >
                                 <Trash2 className="size-4" />
                                 Delete
                               </button>
@@ -423,7 +511,10 @@ export default function History() {
                             <div className="absolute right-0 top-full mt-1 w-44 bg-popover border border-border rounded-md shadow-lg z-[95]">
                               <div className="py-1">
                                 {download.status === 'completed' && (
-                                  <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors">
+                                  <button
+                                    onClick={() => handleRedownload(download.url)}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
+                                  >
                                     <Download className="size-4" />
                                     Redownload
                                   </button>
@@ -440,7 +531,10 @@ export default function History() {
                                     Cancel
                                   </button>
                                 )}
-                                <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors">
+                                <button
+                                  onClick={() => handleOpenLocation(download.destination)}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
+                                >
                                   <FolderOpen className="size-4" />
                                   Open Location
                                 </button>
@@ -452,7 +546,10 @@ export default function History() {
                                   Copy Link
                                 </button>
                                 <div className="border-t border-border my-1" />
-                                <button className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors">
+                                <button
+                                  onClick={() => handleDeleteClick(download.id, download.destination)}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                                >
                                   <Trash2 className="size-4" />
                                   Delete
                                 </button>
@@ -489,6 +586,36 @@ export default function History() {
           )}
         </div>
       )}
-    </PageTransition>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Download</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to remove this download from history?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center space-x-2 py-4">
+            <Checkbox
+              id="delete-file"
+              checked={deleteFileFromDisk}
+              onCheckedChange={(checked: boolean | string) => setDeleteFileFromDisk(checked === true)}
+            />
+            <Label htmlFor="delete-file" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+              Also delete active file from disk
+            </Label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+            <Button
+              variant={deleteFileFromDisk ? "destructive" : "default"}
+              onClick={confirmDelete}
+            >
+              {deleteFileFromDisk ? "Delete Permanently" : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </PageTransition >
   );
 }

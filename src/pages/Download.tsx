@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { MoreHorizontal, Copy, ChevronDown, Clock, ListPlus } from 'lucide-react';
+import { MoreHorizontal, Copy } from 'lucide-react';
 
 const CATEGORIES = ['Videos', 'Music', 'Documents', 'Software', 'Compressed', 'Other'];
 
@@ -38,8 +38,7 @@ export default function DownloadPage() {
     const [categoryPath, setCategoryPath] = useState('');
     const [description, setDescription] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [showMore, setShowMore] = useState(false);
-    const moreRef = useRef<HTMLDivElement>(null);
+
 
     useEffect(() => {
         // Use title from params if available, otherwise parse from URL
@@ -71,13 +70,7 @@ export default function DownloadPage() {
             .catch(() => setSavePath('~/Downloads'));
     }, [url, titleParam, filesizeParam, extParam]);
 
-    useEffect(() => {
-        const handleClick = (e: MouseEvent) => {
-            if (moreRef.current && !moreRef.current.contains(e.target as Node)) setShowMore(false);
-        };
-        document.addEventListener('mousedown', handleClick);
-        return () => document.removeEventListener('mousedown', handleClick);
-    }, []);
+
 
     const handleBrowse = async () => {
         const selected = await open({ directory: true, defaultPath: savePath });
@@ -128,7 +121,7 @@ export default function DownloadPage() {
     return (
         <div className="h-screen bg-background flex flex-col p-3 gap-1.5">
             {/* Header - OUTSIDE layout */}
-            <div className="flex items-center justify-between px-2">
+            {/* <div className="flex items-center justify-between px-2">
                 <div className="flex items-center gap-2">
                     <img src="/icon.png" alt="tur" className="w-10 h-10" />
                     <span className="text-5xl tracking-tight" style={{ fontFamily: "'Margin', sans-serif" }}>tur</span>
@@ -151,7 +144,7 @@ export default function DownloadPage() {
                         </div>
                     )}
                 </div>
-            </div>
+            </div> */}
 
             {/* Main layout */}
             <div className="flex-1 bg-card rounded-2xl border border-border flex flex-col overflow-hidden">

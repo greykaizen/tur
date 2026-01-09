@@ -49,6 +49,17 @@ impl Download {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Queue {
+    pub id: Uuid,
+    pub name: String,
+    pub color: Option<String>,
+    pub mode: String,        // 'sequential' or 'concurrent'
+    pub parallel_count: i32, // for concurrent mode
+    pub status: String,      // 'active', 'paused', 'completed'
+    pub created_at: i64,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -77,10 +88,44 @@ impl Database {
                 last_modified  TEXT,
                 destination    TEXT NOT NULL,
                 accept_ranges  INTEGER NOT NULL DEFAULT 0,
-                updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
+                updated_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+                queue_id       BLOB
             )",
             [],
         )?;
+
+        // Create queues table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS queues (
+                id             BLOB PRIMARY KEY,
+                name           TEXT NOT NULL,
+                color          TEXT,
+                mode           TEXT NOT NULL DEFAULT 'sequential',
+                parallel_count INTEGER NOT NULL DEFAULT 2,
+                status         TEXT NOT NULL DEFAULT 'active',
+                created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+            )",
+            [],
+        )?;
+
+        // Migrations for existing tables
+        let _ = conn.execute("ALTER TABLE downloads ADD COLUMN queue_id BLOB", []);
+        let _ = conn.execute(
+            "ALTER TABLE downloads ADD COLUMN queue_position INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE queues ADD COLUMN mode TEXT NOT NULL DEFAULT 'sequential'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE queues ADD COLUMN parallel_count INTEGER NOT NULL DEFAULT 2",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE queues ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            [],
+        );
 
         // Create indexes for better performance
         conn.execute(
@@ -131,13 +176,14 @@ impl Database {
         etag: Option<&str>,
         last_modified: Option<&str>,
         accept_ranges: bool,
+        queue_id: Option<&Uuid>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO downloads (
                 id, url, filename, destination, size, content_type, 
-                etag, last_modified, accept_ranges, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch())",
+                etag, last_modified, accept_ranges, updated_at, queue_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch(), ?10)",
             params![
                 id.as_bytes(),
                 url,
@@ -147,7 +193,8 @@ impl Database {
                 content_type,
                 etag,
                 last_modified,
-                accept_ranges as i32
+                accept_ranges as i32,
+                queue_id.map(|u| u.as_bytes())
             ],
         )?;
         Ok(())
@@ -343,6 +390,187 @@ impl Database {
             accept_ranges: row.get::<_, i32>(10)? != 0,
             updated_at: row.get(11)?,
         })
+    }
+
+    // --- Queue Management ---
+
+    /// Create a new queue
+    pub fn create_queue(
+        &self,
+        name: &str,
+        color: Option<&str>,
+        mode: &str,
+        parallel_count: i32,
+    ) -> Result<Queue> {
+        let id = Uuid::now_v7();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO queues (id, name, color, mode, parallel_count, status, created_at) 
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', unixepoch())",
+            params![id.as_bytes(), name, color, mode, parallel_count],
+        )?;
+
+        Ok(Queue {
+            id,
+            name: name.to_string(),
+            color: color.map(|s| s.to_string()),
+            mode: mode.to_string(),
+            parallel_count,
+            status: "active".to_string(),
+            created_at: extract_timestamp_from_uuid_v7(&id).unwrap_or(0),
+        })
+    }
+
+    /// Get all queues
+    pub fn get_queues(&self) -> Result<Vec<Queue>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, mode, parallel_count, status, created_at 
+             FROM queues ORDER BY created_at ASC",
+        )?;
+
+        let queues = stmt.query_map([], |row| {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            Ok(Queue {
+                id: Uuid::from_slice(&id_bytes).unwrap(),
+                name: row.get(1)?,
+                color: row.get(2)?,
+                mode: row.get(3)?,
+                parallel_count: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+
+        queues.collect()
+    }
+
+    /// Get a single queue by ID
+    pub fn get_queue_by_id(&self, queue_id: &Uuid) -> Result<Option<Queue>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, mode, parallel_count, status, created_at 
+             FROM queues WHERE id = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![queue_id.as_bytes()])?;
+        if let Some(row) = rows.next()? {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            Ok(Some(Queue {
+                id: Uuid::from_slice(&id_bytes).unwrap(),
+                name: row.get(1)?,
+                color: row.get(2)?,
+                mode: row.get(3)?,
+                parallel_count: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get download IDs in a queue that are pending (not yet started or queued status)
+    /// Returns them ordered by queue_position
+    pub fn get_pending_queue_downloads(&self, queue_id: &Uuid) -> Result<Vec<Uuid>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM downloads 
+             WHERE queue_id = ?1 AND (status IS NULL OR status = 'paused')
+             ORDER BY queue_position ASC, updated_at ASC",
+        )?;
+
+        let ids: Vec<Uuid> = stmt
+            .query_map(params![queue_id.as_bytes()], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                Ok(Uuid::from_slice(&id_bytes).unwrap())
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(ids)
+    }
+
+    /// Count currently active (non-completed, non-paused) downloads in a queue
+    pub fn count_active_in_queue(&self, queue_id: &Uuid) -> Result<i32> {
+        let conn = self.conn.lock().unwrap();
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM downloads 
+             WHERE queue_id = ?1 AND status IS NULL",
+            params![queue_id.as_bytes()],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Update queue status
+    pub fn update_queue_status(&self, queue_id: &Uuid, status: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE queues SET status = ?2 WHERE id = ?1",
+            params![queue_id.as_bytes(), status],
+        )?;
+        Ok(())
+    }
+
+    /// Check if all downloads in a queue are completed
+    pub fn is_queue_complete(&self, queue_id: &Uuid) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        // Count non-completed downloads in queue
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM downloads 
+             WHERE queue_id = ?1 AND (status IS NULL OR status != 'completed')",
+            params![queue_id.as_bytes()],
+            |row| row.get(0),
+        )?;
+        Ok(count == 0)
+    }
+
+    /// Add a download to a queue with position
+    pub fn add_download_to_queue(
+        &self,
+        download_id: &Uuid,
+        queue_id: &Uuid,
+        position: Option<i32>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let pos = position.unwrap_or_else(|| {
+            // Get next available position
+            conn.query_row(
+                "SELECT COALESCE(MAX(queue_position), 0) + 1 FROM downloads WHERE queue_id = ?1",
+                params![queue_id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap_or(1)
+        });
+        conn.execute(
+            "UPDATE downloads SET queue_id = ?2, queue_position = ?3 WHERE id = ?1",
+            params![download_id.as_bytes(), queue_id.as_bytes(), pos],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a download from its queue
+    pub fn remove_download_from_queue(&self, download_id: &Uuid) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE downloads SET queue_id = NULL, queue_position = NULL WHERE id = ?1",
+            params![download_id.as_bytes()],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a queue (and unset queue_id in downloads)
+    pub fn delete_queue(&self, id: &Uuid) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Unset queue_id for downloads in this queue
+        conn.execute(
+            "UPDATE downloads SET queue_id = NULL WHERE queue_id = ?1",
+            params![id.as_bytes()],
+        )?;
+        // Delete the queue
+        conn.execute("DELETE FROM queues WHERE id = ?1", params![id.as_bytes()])?;
+        Ok(())
     }
 }
 

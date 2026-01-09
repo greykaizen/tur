@@ -12,6 +12,10 @@ export type AppSettings = {
         show_segment_progress: boolean;
         show_welcome_screen: boolean;
         autostart: boolean;
+        startup_page: 'home' | 'details' | 'history';
+        new_download_action: 'go_to_home' | 'stay_on_page';
+        completion_display_duration: number;
+        completion_action: 'popup' | 'notification' | 'none';
     };
     shortcuts: {
         go_home: string;
@@ -53,6 +57,10 @@ const DEFAULT_SETTINGS: AppSettings = {
         show_segment_progress: true,
         show_welcome_screen: true,
         autostart: false,
+        startup_page: 'home',
+        new_download_action: 'go_to_home',
+        completion_display_duration: 5,
+        completion_action: 'popup',
     },
     shortcuts: {
         go_home: 'Ctrl+K',

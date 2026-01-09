@@ -20,6 +20,7 @@ export interface DownloadInfo {
     num_connections: number;
     segments?: { start: number; end: number }[];
     error?: string;
+    queue_id?: string | null;
 }
 
 // Progress update from backend event
@@ -41,6 +42,13 @@ interface QueueEvent {
     resume_supported: boolean;
     num_connections: number;
     status: string;
+    queue_id?: string | null;
+}
+
+export interface NewDownloadItem {
+    url: string;
+    filename?: string | null;
+    queue_id?: string | null;
 }
 
 export function useDownloads() {
@@ -68,6 +76,7 @@ export function useDownloads() {
                     destination: dl.destination,
                     resume_supported: dl.resume_supported,
                     num_connections: dl.num_connections,
+                    queue_id: dl.queue_id,
                 });
                 return next;
             });
@@ -105,16 +114,39 @@ export function useDownloads() {
             });
         }).then(fn => unlistenFns.push(fn));
 
-        // Download complete event
-        listen<{ id: string }>('download_complete', (event) => {
+        // Download complete event - check queue progression
+        listen<{ id: string }>('download_complete', async (event) => {
+            // Get queue_id before updating state
+            let queueId: string | null | undefined = null;
             setDownloads(prev => {
+                const dl = prev.get(event.payload.id);
+                if (dl) {
+                    queueId = dl.queue_id;
+                }
                 const next = new Map(prev);
-                const dl = next.get(event.payload.id);
                 if (dl) {
                     next.set(dl.id, { ...dl, status: 'completed', progress: 100 });
                 }
                 return next;
             });
+
+            // Check queue progression if download was in a queue
+            if (queueId) {
+                try {
+                    const toResume = await invoke<string[]>('check_queue_progression', { queueId });
+                    if (toResume.length > 0) {
+                        // Resume next downloads in queue
+                        await invoke('handle_download_request', {
+                            request: {
+                                type: 'Resume',
+                                data: toResume,
+                            },
+                        });
+                    }
+                } catch (e) {
+                    console.error('Queue progression check failed:', e);
+                }
+            }
         }).then(fn => unlistenFns.push(fn));
 
         // Download failed event
@@ -135,13 +167,13 @@ export function useDownloads() {
     }, []);
 
     // Start new downloads
-    const startDownloads = useCallback(async (urls: string[]) => {
+    const startDownloads = useCallback(async (items: NewDownloadItem[]) => {
         try {
             setError(null);
             await invoke('handle_download_request', {
                 request: {
                     type: 'New',
-                    data: urls,
+                    data: items,
                 },
             });
         } catch (e) {
@@ -167,7 +199,9 @@ export function useDownloads() {
     // Pause a download
     const pauseDownload = useCallback(async (id: string) => {
         try {
+            console.log('[useDownloads] Pausing download:', id);
             await invoke('pause_download', { id });
+            console.log('[useDownloads] Pause successful, updating state');
             setDownloads(prev => {
                 const next = new Map(prev);
                 const dl = next.get(id);
@@ -177,6 +211,7 @@ export function useDownloads() {
                 return next;
             });
         } catch (e) {
+            console.error('[useDownloads] Pause error:', e);
             setError(e instanceof Error ? e.message : String(e));
         }
     }, []);
@@ -184,15 +219,27 @@ export function useDownloads() {
     // Cancel a download
     const cancelDownload = useCallback(async (id: string) => {
         try {
+            console.log('[useDownloads] Cancelling download:', id);
             await invoke('cancel_download', { id });
+            console.log('[useDownloads] Cancel successful, removing from state');
             setDownloads(prev => {
                 const next = new Map(prev);
                 next.delete(id);
                 return next;
             });
         } catch (e) {
+            console.error('[useDownloads] Cancel error:', e);
             setError(e instanceof Error ? e.message : String(e));
         }
+    }, []);
+
+    // Manually remove a download from state (for UI updates after deletion)
+    const removeDownload = useCallback((id: string) => {
+        setDownloads(prev => {
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+        });
     }, []);
 
     // Load history from database (for History page and app restart)
@@ -253,6 +300,7 @@ export function useDownloads() {
         pauseDownload,
         cancelDownload,
         loadHistory,
+        removeDownload,
     };
 }
 

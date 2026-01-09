@@ -192,7 +192,7 @@ export default function Header({ sidebarOpen, onToggleSidebar, showSidebarToggle
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95, y: -10 }}
                   transition={{ duration: 0.15, ease: "easeOut" }}
-                  className="absolute right-0 mt-2 w-56 bg-popover text-popover-foreground border border-border rounded-md shadow-lg z-[100]"
+                  className="absolute right-0 mt-2 w-44 bg-popover text-popover-foreground border border-border rounded-md shadow-lg z-[100]"
                 >
                   <div className="py-1">
                     <button

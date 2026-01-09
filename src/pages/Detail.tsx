@@ -21,13 +21,15 @@ export default function Detail() {
     loadHistory();
   }, [loadHistory]);
 
-  // Convert hook data to display format
-  const allDownloads = downloads.map(d => ({
-    ...d,
-    source: d.status === 'completed' || d.status === 'failed' ? 'history' as const : 'active' as const
-  }));
+  // Convert hook data to display format and filter active only
+  const allDownloads = downloads
+    .map(d => ({
+      ...d,
+      source: d.status === 'completed' || d.status === 'failed' ? 'history' as const : 'active' as const
+    }))
+    .filter(d => d.status !== 'completed' && d.status !== 'failed');
 
-  // Sort: active (downloading/paused) on top, completed at bottom
+  // Sort: active (downloading/paused) on top
   const sortedDownloads = allDownloads.sort((a, b) => {
     // Active downloads first
     const aIsActive = a.status === 'downloading' || a.status === 'paused';

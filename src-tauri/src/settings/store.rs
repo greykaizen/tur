@@ -110,6 +110,16 @@ fn update_app_field(
         "show_welcome_screen" => config.show_welcome_screen = value.as_bool().unwrap_or(true),
         "autostart" => config.autostart = value.as_bool().unwrap_or(false),
         "auto_resume" => config.auto_resume = value.as_bool().unwrap_or(false),
+        "startup_page" => config.startup_page = value.as_str().unwrap_or("home").to_string(),
+        "new_download_action" => {
+            config.new_download_action = value.as_str().unwrap_or("go_to_home").to_string()
+        }
+        "completion_display_duration" => {
+            config.completion_display_duration = value.as_u64().unwrap_or(5).min(30) as u8
+        }
+        "completion_action" => {
+            config.completion_action = value.as_str().unwrap_or("popup").to_string()
+        }
         _ => return Err(format!("Unknown app field: {}", field)),
     }
     Ok(())

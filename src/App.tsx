@@ -1,9 +1,11 @@
 import { ThemeProvider } from "@/components/theme-provider"
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { SettingsProvider, useSettings } from '@/contexts/SettingsContext';
 import { DownloadSelectionProvider, useDownloadSelection } from '@/contexts/DownloadSelectionContext';
+import { useMenuEvents } from '@/hooks/useMenuEvents';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Settings from '@/pages/Settings';
@@ -12,6 +14,8 @@ import Detail from '@/pages/Detail';
 import About from '@/pages/About';
 import Donate from '@/pages/Donate';
 import Download from '@/pages/Download';
+import { QueueCreationDialog } from '@/components/QueueCreationDialog';
+import { QueueProvider } from '@/contexts/QueueContext';
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -33,8 +37,45 @@ function AnimatedRoutes() {
 
 function AppContent() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { settings, ready } = useSettings();
   const { isEmptyState } = useDownloadSelection();
+  const initialRedirectDone = useRef(false);
+  const [showQueueDialog, setShowQueueDialog] = useState(false);
+
+  // Listen for queue dialog event
+  useEffect(() => {
+    const handleOpenQueueDialog = () => setShowQueueDialog(true);
+    window.addEventListener('menu:create-queue', handleOpenQueueDialog);
+    return () => window.removeEventListener('menu:create-queue', handleOpenQueueDialog);
+  }, []);
+
+  // Listen for global menu events
+  useMenuEvents();
+
+  // Listen for new downloads to navigate to Home (if not in download window)
+  useEffect(() => {
+    const unlisten = listen('queue_download', () => {
+      if (location.pathname !== '/download') {
+        navigate('/');
+      }
+    });
+    return () => {
+      unlisten.then(unlistenFn => unlistenFn());
+    };
+  }, [navigate, location.pathname]);
+
+  // Handle startup page redirect
+  useEffect(() => {
+    if (ready && !initialRedirectDone.current) {
+      initialRedirectDone.current = true;
+      if (settings.app.startup_page === 'history') {
+        navigate('/history');
+      } else if (settings.app.startup_page === 'details') {
+        navigate('/detail');
+      }
+    }
+  }, [ready, settings.app.startup_page, navigate]);
 
   useEffect(() => {
     if (!ready) return;
@@ -86,11 +127,8 @@ function AppContent() {
         e.preventDefault();
         navigate('/history');
       } else if (matchesShortcut(toggleSidebar)) {
-        // Don't toggle sidebar when in home empty state
-        if (!isEmptyState) {
-          e.preventDefault();
-          window.dispatchEvent(new CustomEvent('toggle-sidebar'));
-        }
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('toggle-sidebar'));
       } else if (matchesShortcut(cancelDownload)) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('cancel-download'));
@@ -108,6 +146,10 @@ function AppContent() {
   return (
     <Layout>
       <AnimatedRoutes />
+      <QueueCreationDialog
+        open={showQueueDialog}
+        onOpenChange={setShowQueueDialog}
+      />
     </Layout>
   );
 }
@@ -130,7 +172,9 @@ export default function App() {
       <SettingsProvider>
         <BrowserRouter>
           <DownloadSelectionProvider>
-            <StandaloneRoutes />
+            <QueueProvider>
+              <StandaloneRoutes />
+            </QueueProvider>
           </DownloadSelectionProvider>
         </BrowserRouter>
       </SettingsProvider>
