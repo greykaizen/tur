@@ -4,7 +4,25 @@ window.Tur.ui = {
         const ui = window.Tur.ui; // Access self methods
 
         const container = document.createElement('div');
+        // Initial class - waiting for storage
         container.className = 'tur-container';
+
+        // Apply saved design
+        chrome.storage.sync.get(['tur_design'], (result) => {
+            if (result.tur_design) {
+                container.classList.add(`tur-btn-${result.tur_design}`);
+            } else {
+                container.classList.add('tur-btn-v1');
+            }
+        });
+
+        // Listen for changes
+        chrome.storage.onChanged.addListener((changes) => {
+            if (changes.tur_design) {
+                container.classList.remove('tur-btn-v1', 'tur-btn-v2', 'tur-btn-v3', 'tur-btn-v4');
+                container.classList.add(`tur-btn-${changes.tur_design.newValue}`);
+            }
+        });
 
         // Button with logo + text
         const button = document.createElement('button');
