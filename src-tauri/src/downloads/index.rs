@@ -25,3 +25,19 @@ impl<Context> Decode<Context> for Index {
         })
     }
 }
+
+impl Index {
+    pub fn unit_to_bytes(unit: usize) -> usize {
+        unit << 23
+    }
+
+    pub fn bytes_to_unit(bytes: usize) -> usize {
+        bytes >> 23
+    }
+
+    pub fn remaining_units(&self) -> usize {
+        let start = self.start.load(Ordering::Relaxed);
+        let end = self.end.load(Ordering::Relaxed);
+        end.saturating_sub(start)
+    }
+}
