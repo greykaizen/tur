@@ -257,6 +257,7 @@ impl DownloadManager {
                 url_str.to_string(),
                 destination,
                 size.unwrap_or(0) as usize,
+                0, // New download starts at 0 bytes
                 app,
                 settings,
                 self.completion_tx.clone(),
@@ -376,6 +377,7 @@ impl DownloadManager {
                 download.url.clone(),
                 download.destination.clone(),
                 server_size.unwrap_or(0) as usize,
+                download.bytes_received as usize, // Resume from saved progress
                 app,
                 settings,
                 self.completion_tx.clone(),
@@ -439,34 +441,60 @@ impl DownloadManager {
             _ => return false,
         };
 
-        // 3. Create State from DB progress & Save
+        // 3. Create State from LIVE progress (not stale DB value)
         let total_size = download_info.size.unwrap_or(0) as usize;
-        let bytes_rec = download_info.bytes_received as usize;
+        // Use live bytes_downloaded from instance, fallback to DB if somehow missing
+        let bytes_rec = self
+            .get_bytes_downloaded(id)
+            .unwrap_or(download_info.bytes_received as usize);
 
         // Load settings to get num_threads preference
         let settings = settings::load_or_create(app);
         let num_threads = settings.download.num_threads;
 
-        let download_state = Download::from_offset(bytes_rec, total_size, num_threads);
-
-        if let Err(e) = download_state.save(app, id) {
-            tracing::error!("Failed to save state on pause for {}: {}", id, e);
-        }
-
-        // 4. Update DB status
-        if let Err(e) = db.update_status(id, Some("paused")) {
-            tracing::error!("Failed to update DB status on pause for {}: {}", id, e);
-        }
-
-        // 5. Cancel and Abort Workers
+        // 4. Cancel and Abort Workers FIRST, then save their live state
         if let Some(instance) = self.instances.lock().unwrap().remove(id) {
             // Signal cancellation first
             instance.cancel_token.cancel();
+
+            // Save LIVE state from the running instance (indices + worker states)
+            // This preserves the exact progress including partial units
+            {
+                let indices_guard = instance.indices.lock().unwrap();
+                let range: Vec<Arc<Index>> = indices_guard.clone();
+                drop(indices_guard);
+
+                // We need to reconstruct worker_states - but we don't have direct access
+                // The progress emitter saves state periodically, so the meta file should be recent
+                // For now, create a Download with the live indices
+                let max_index = Download::get_index(total_size >> 23).unwrap_or(0);
+                // Set steal_exhausted = false so workers can steal from existing indices on resume
+                let coordinator = super::coordinator::Coordinator::from_parts(
+                    max_index, max_index, 2, false, total_size
+                );
+
+                let download_state = Download {
+                    coordinator,
+                    range,
+                    worker_states: (0..num_threads).map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0))).collect(),
+                };
+
+                if let Err(e) = download_state.save(app, id) {
+                    tracing::error!("Failed to save state on pause for {}: {}", id, e);
+                }
+            }
 
             // Abort handles as backup
             for handle in instance.handles {
                 handle.abort();
             }
+
+            // 5. Update DB status and progress
+            if let Err(e) = db.update_status(id, Some("paused")) {
+                tracing::error!("Failed to update DB status on pause for {}: {}", id, e);
+            }
+            // Also update bytes_received so DB reflects actual progress
+            let _ = db.update_progress(id, bytes_rec as i64);
 
             // 6. Emit Event
             let _ = app.emit(
@@ -486,34 +514,59 @@ impl DownloadManager {
             _ => return false,
         };
 
-        // 2. Save current state before stopping
+        let total_size = download_info.size.unwrap_or(0) as usize;
         let settings = settings::load_or_create(app);
-        let state = Download::from_offset(
-            download_info.bytes_received as usize,
-            download_info.size.unwrap_or(0) as usize,
-            settings.download.num_threads,
-        );
-        if let Err(e) = state.save(app, id) {
-            tracing::error!("Failed to save state on cancel for {}: {}", id, e);
-        }
 
-        // 3. Stop workers
+        // 2. Stop workers and save LIVE state
         if let Some(instance) = self.instances.lock().unwrap().remove(id) {
             instance.cancel_token.cancel();
+
+            // Save LIVE state from the running instance
+            let bytes_rec = instance
+                .bytes_downloaded
+                .load(std::sync::atomic::Ordering::Relaxed);
+
+            {
+                let indices_guard = instance.indices.lock().unwrap();
+                let range: Vec<Arc<Index>> = indices_guard.clone();
+                drop(indices_guard);
+
+                let max_index = Download::get_index(total_size >> 23).unwrap_or(0);
+                // Set steal_exhausted = false so workers can steal from existing indices on resume
+                let coordinator = super::coordinator::Coordinator::from_parts(
+                    max_index, max_index, 2, false, total_size
+                );
+
+                let state = Download {
+                    coordinator,
+                    range,
+                    worker_states: (0..settings.download.num_threads)
+                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)))
+                        .collect(),
+                };
+
+                if let Err(e) = state.save(app, id) {
+                    tracing::error!("Failed to save state on cancel for {}: {}", id, e);
+                }
+            }
+
             for handle in instance.handles {
                 handle.abort();
             }
+
+            // 3. Update DB status to 'cancelled' (keeps metadata + partial file)
+            let _ = db.update_status(id, Some("cancelled"));
+            let _ = db.update_progress(id, bytes_rec as i64);
+
+            // 4. Emit event
+            let _ = app.emit(
+                &format!("download_cancelled_{}", id),
+                json!({"id": id.to_string()}),
+            );
+            return true;
         }
 
-        // 4. Update DB status to 'cancelled' (keeps metadata + partial file)
-        let _ = db.update_status(id, Some("cancelled"));
-
-        // 5. Emit event
-        let _ = app.emit(
-            &format!("download_cancelled_{}", id),
-            json!({"id": id.to_string()}),
-        );
-        true
+        false
     }
 
     /// Delete a download completely (remove files, metadata, and DB record)
@@ -570,15 +623,33 @@ impl DownloadManager {
         );
 
         for (id, instance) in instances.drain() {
-            // 1. Save state
+            // 1. Save LIVE state from instance
+            let live_bytes = instance
+                .bytes_downloaded
+                .load(std::sync::atomic::Ordering::Relaxed);
+
             if let Ok(Some(info)) = db.get_download_by_id(&id) {
-                // Use default settings if load fails
+                let total_size = info.size.unwrap_or(0) as usize;
                 let settings = settings::load_or_create(app);
-                let state = Download::from_offset(
-                    info.bytes_received as usize,
-                    info.size.unwrap_or(0) as usize,
-                    settings.download.num_threads,
+
+                // Save live indices
+                let indices_guard = instance.indices.lock().unwrap();
+                let range: Vec<Arc<Index>> = indices_guard.clone();
+                drop(indices_guard);
+
+                let max_index = Download::get_index(total_size >> 23).unwrap_or(0);
+                // Set steal_exhausted = false so workers can steal from existing indices on resume
+                let coordinator = super::coordinator::Coordinator::from_parts(
+                    max_index, max_index, 2, false, total_size
                 );
+
+                let state = Download {
+                    coordinator,
+                    range,
+                    worker_states: (0..settings.download.num_threads)
+                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)))
+                        .collect(),
+                };
 
                 if let Err(e) = state.save(app, &id) {
                     tracing::error!("Failed to save state during shutdown for {}: {}", id, e);
@@ -587,6 +658,7 @@ impl DownloadManager {
                 if let Err(e) = db.update_status(&id, Some("paused")) {
                     tracing::error!("Failed to update status during shutdown for {}: {}", id, e);
                 }
+                let _ = db.update_progress(&id, live_bytes as i64);
             }
 
             // 2. Abort workers

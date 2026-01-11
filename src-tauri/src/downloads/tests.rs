@@ -233,21 +233,19 @@ proptest! {
 
         let loaded: Download = bincode::decode_from_std_read(&mut buffer.as_slice(), config::standard()).unwrap();
 
-        // Coordinator should have range_byte set to total_size - bytes_rec (remaining)
-        // Actually from_offset sets:
-        // range_byte = index for (total - bytes)
-        // But let's check the core requirement:
-        // If we paused exactly at `bytes_rec`, the new state should reflect that as the *start* of the new range?
-        // Wait, from_offset logic:
-        // start = bytes_rec, end = total_size.
-        // The Download struct serialization saves range_byte.
-        // Let's verify the reconstructed state respects the input offset.
+        // from_offset now uses unit indices (8MB units)
+        // start_unit = bytes_rec >> 23
+        // total_units = ceil(total / 8MB)
+        // remaining_units = total_units - start_unit
+        // remaining_bytes ≈ remaining_units * 8MB (approximate due to unit granularity)
+        let start_unit = bytes_rec >> 23;
+        let total_units = (total + (1 << 23) - 1) >> 23;
+        let expected_remaining_units = total_units.saturating_sub(start_unit);
 
-        let expected_remaining = total - bytes_rec;
-        let loaded_remaining = loaded.bytes_remaining();
+        let loaded_remaining = loaded.units_remaining();
+        // So loaded_remaining = remaining_units
 
-        // Allow small deviation due to chunk alignment if any (though from_offset uses strict bytes)
-        prop_assert_eq!(expected_remaining, loaded_remaining, "Persisted state remaining bytes mismatch");
+        prop_assert_eq!(expected_remaining_units, loaded_remaining, "Persisted state remaining units mismatch");
     }
 
     /// **Property 2: Pause updates database status**
@@ -264,12 +262,16 @@ proptest! {
          // 1. We have 'active_rec' bytes.
          // 2. We pause.
          // 3. We resume.
-         // 4. The new download should start fetching from 'active_rec'.
+         // 4. The new download should start fetching from the correct unit.
 
          let state = Download::from_offset(active_rec, filesize, 2);
+
+         // from_offset now stores unit indices, not bytes
+         // start_unit = active_rec >> 23 (8MB units)
+         let expected_start_unit = active_rec >> 23;
          let initial_range = state.range[0].start.load(Ordering::Relaxed);
 
-         prop_assert_eq!(initial_range, active_rec, "Paused state does not start from received bytes");
+         prop_assert_eq!(initial_range, expected_start_unit, "Paused state does not start from correct unit");
     }
 
     /// **Property 5: Cancel cleans up**
@@ -285,12 +287,17 @@ proptest! {
     ) {
         // Shutdown logic is: save state -> update db.
         // We verify that the state object created for saving is correct.
+        // from_offset now uses unit indices (8MB units)
         let settings_threads = 4;
         let state = Download::from_offset(rec_bytes, total, settings_threads);
 
-        let saved_remaining = state.bytes_remaining();
-        let expected = total - rec_bytes;
-        prop_assert_eq!(saved_remaining, expected, "Shutdown state creation incorrect");
+        // bytes_remaining() now returns remaining units, not bytes
+        let start_unit = rec_bytes >> 23;
+        let total_units = (total + (1 << 23) - 1) >> 23;
+        let expected_remaining_units = total_units.saturating_sub(start_unit);
+
+        let saved_remaining = state.units_remaining();
+        prop_assert_eq!(saved_remaining, expected_remaining_units, "Shutdown state creation incorrect");
     }
 
     /// **Property 10: Byte offset conversion**

@@ -120,7 +120,7 @@ impl Download {
     }
 
     /// Create Download for resume from a known byte offset
-    /// Treats the remaining bytes (offset..total_size) as a single chunk
+    /// Converts byte offset to unit index and creates appropriate range
     /// The Coordinator is initialized as "exhausted" so workers only use stealing
     pub fn from_offset(offset: usize, total_size: usize, num_conn: u8) -> Self {
         let max_index = Self::get_index(total_size >> 23).unwrap_or(0);
@@ -137,11 +137,16 @@ impl Download {
 
         let mut range = Vec::with_capacity(num_conn as usize);
 
-        // Create one large index for the remainder
-        if offset < total_size {
+        // Convert byte offset to unit index (8MB units)
+        // Unit = bytes >> 23 (divide by 8MB)
+        let start_unit = offset >> 23;
+        let total_units = (total_size + (1 << 23) - 1) >> 23; // ceil division
+
+        // Create one index for the remaining units
+        if start_unit < total_units {
             range.push(Arc::new(Index {
-                start: AtomicUsize::new(offset),
-                end: AtomicUsize::new(total_size),
+                start: AtomicUsize::new(start_unit),
+                end: AtomicUsize::new(total_units),
             }));
         }
 
@@ -194,8 +199,9 @@ impl Download {
         bincode::encode_into_std_write(self, &mut file, config::standard()).map(|_| ())
     }
 
-    /// Calculate total bytes still remaining to download
-    pub fn bytes_remaining(&self) -> usize {
+    /// Calculate total units still remaining to download
+    /// Each unit is 8MB (1 << 23 bytes)
+    pub fn units_remaining(&self) -> usize {
         self.range
             .iter()
             .map(|idx| {
@@ -204,6 +210,12 @@ impl Download {
                 end.saturating_sub(start)
             })
             .sum()
+    }
+
+    /// Calculate total bytes still remaining to download (approximate)
+    /// Note: This is an approximation since we track at unit granularity (8MB)
+    pub fn bytes_remaining(&self) -> usize {
+        self.units_remaining() << 23
     }
 
     /// Snapshot worker states for serialization

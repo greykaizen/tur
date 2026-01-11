@@ -103,14 +103,14 @@ impl Coordinator {
 
     /// Attempt to steal a range from a target worker's Index
     /// Uses 38.2% golden ratio (1 - PHI^-1), rounded high
-    /// Starts from steal_ptr (index 2), wraps around
+    /// Starts from steal_ptr, wraps around
     /// Returns None if full circle completed (steal_exhausted set)
     pub fn steal_range(
         &mut self,
         indices: &mut Vec<Arc<Index>>,
         min_steal_units: usize,
     ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
-        if self.steal_exhausted || indices.len() < 3 {
+        if self.steal_exhausted || indices.is_empty() {
             return None;
         }
 
@@ -120,11 +120,6 @@ impl Coordinator {
         // Try each index once (full circle detection)
         for attempt in 0..num_indices {
             let target = (start_ptr + attempt) % num_indices;
-
-            // Skip indices 0 and 1 as per architecture
-            if target < 2 {
-                continue;
-            }
 
             let index = &indices[target];
             let current_start = index.start.load(Ordering::Relaxed);

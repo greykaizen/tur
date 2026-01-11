@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Listener, Manager};
 
 use tur_lib::database::Database;
 use tur_lib::downloads::manager::NewDownloadItem;
@@ -128,7 +128,16 @@ async fn run_test_logic(app: tauri::AppHandle) {
         }
     });
 
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    println!("║                    TUR Download Test Harness                  ║");
+    println!("╠══════════════════════════════════════════════════════════════╣");
+    println!("║  Controls:                                                    ║");
+    println!("║    [p] Pause    [r] Resume    [c] Cancel    [q] Quit          ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+    println!();
     println!("Starting download (Debian 13.3.0 Netinst)...");
+    // "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.3.0-amd64-netinst.iso",
+    // "https://mirror.bom2.albony.in/videolan-ftp/vlc/3.0.23/win32/vlc-3.0.23-win32.exe",
     let url = Url::parse(
         "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.3.0-amd64-netinst.iso",
     )
@@ -143,6 +152,13 @@ async fn run_test_logic(app: tauri::AppHandle) {
         .handle_request(&app, DownloadRequest::New(vec![item]))
         .await
         .expect("Failed to start");
+
+    // Get the download ID we just started (most recent in-progress download)
+    let download_id = db.get_downloads_by_status(None)
+        .ok()
+        .and_then(|list| list.first().map(|d| d.id))
+        .expect("Failed to get download ID");
+    println!("Download ID: {}", download_id);
 
     // 5. MultiProgress Setup
     let mp = indicatif::MultiProgress::new();
@@ -161,9 +177,8 @@ async fn run_test_logic(app: tauri::AppHandle) {
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                // Update Main Bar
-                if let Ok(downloads) = db.get_downloads() {
-                     if let Some(d) = downloads.first() {
+                // Update Main Bar - query by specific download ID
+                if let Ok(Some(d)) = db.get_download_by_id(&download_id) {
                          let status = d.status.as_deref().unwrap_or("run");
                          let real_received = manager.get_bytes_downloaded(&d.id).map(|b| b as u64).unwrap_or(d.bytes_received as u64);
                          let size = d.size.unwrap_or(0) as u64;
@@ -192,7 +207,6 @@ async fn run_test_logic(app: tauri::AppHandle) {
                              }
                              break;
                          }
-                     }
                 }
 
                 // Update Worker Bars
@@ -247,20 +261,38 @@ async fn run_test_logic(app: tauri::AppHandle) {
                 }
             }
             Some(cmd) = rx.recv() => {
-                 let active = if let Ok(list) = db.get_downloads() { list.first().map(|d| d.id) } else { None };
-                 if let Some(id) = active {
+                 // Use the tracked download_id, but check if it's still active for pause/cancel
+                 let id = download_id;
                      match cmd.as_str() {
-                         "p" => { manager.pause_instance(&id, &app, &db); },
-                         "r" => { manager.handle_request(&app, DownloadRequest::Resume(vec![id])).await.unwrap(); },
-                         "c" => { manager.cancel_instance(&id, &app, &db); },
+                         "p" => {
+                            if manager.pause_instance(&id, &app, &db) {
+                                pb_main.println("⏸️  Download paused. Press [r] to resume.");
+                            }
+                         },
+                         "r" => {
+                            pb_main.println("▶️  Resuming download...");
+                            if let Err(e) = manager.handle_request(&app, DownloadRequest::Resume(vec![id])).await {
+                                pb_main.println(format!("❌ Resume failed: {}", e));
+                            }
+                         },
+                         "c" => {
+                            if manager.cancel_instance(&id, &app, &db) {
+                                pb_main.println("🛑 Download cancelled. State saved for later resume.");
+                            }
+                         },
                          "q" => {
+                            pb_main.println("👋 Shutting down gracefully...");
                             manager.shutdown_all_graceful(&app, &db);
                             app.exit(0);
                             break;
                          },
-                         _ => {},
+                         "h" | "?" => {
+                            pb_main.println("Controls: [p]ause | [r]esume | [c]ancel | [q]uit | [h]elp");
+                         },
+                         _ => {
+                            pb_main.println("Unknown command. Press [h] for help.");
+                         },
                      }
-                 }
             }
         }
     }
