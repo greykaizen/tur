@@ -4,7 +4,7 @@
 
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
-    AppHandle, Emitter, Manager, Runtime,
+    AppHandle, Emitter, Runtime,
 };
 
 /// Create the application menu
