@@ -64,18 +64,22 @@ impl Coordinator {
             let idx = self.range_byte.start as usize;
             self.range_byte.start += 1;
 
-            let byte_range = RANGE[idx].clone();
-            // Convert from 8MB units to bytes, clamp to total_size
-            let start_bytes = byte_range.start << 23; // * 8MB
-            let end_bytes = (byte_range.end << 23).min(self.total_size);
+            let unit_range = RANGE[idx].clone();
+
+            // Calculate total units (ceil(total_size / 8MB))
+            let total_units = (self.total_size + (1 << 23) - 1) >> 23;
+
+            // Clamp end to total_units
+            let start_unit = unit_range.start;
+            let end_unit = unit_range.end.min(total_units);
 
             let index = Arc::new(Index {
-                start: AtomicUsize::new(start_bytes),
-                end: AtomicUsize::new(end_bytes),
+                start: AtomicUsize::new(start_unit),
+                end: AtomicUsize::new(end_unit),
             });
 
             range_vec.push(index.clone());
-            Some((index, start_bytes..end_bytes))
+            Some((index, start_unit..end_unit))
         } else {
             None
         }
@@ -86,7 +90,7 @@ impl Coordinator {
     pub fn request_work(
         &mut self,
         range_vec: &mut Vec<Arc<Index>>,
-        min_steal_bytes: usize,
+        min_steal_units: usize,
     ) -> Option<(Arc<Index>, Range<usize>)> {
         // 1. Try to get new range
         if let Some(result) = self.new_range(range_vec) {
@@ -94,7 +98,7 @@ impl Coordinator {
         }
 
         // 2. Try to steal from existing workers
-        self.steal_range(range_vec, min_steal_bytes)
+        self.steal_range(range_vec, min_steal_units)
     }
 
     /// Attempt to steal a range from a target worker's Index
@@ -104,7 +108,7 @@ impl Coordinator {
     pub fn steal_range(
         &mut self,
         indices: &mut Vec<Arc<Index>>,
-        min_steal_bytes: usize,
+        min_steal_units: usize,
     ) -> Option<(Arc<Index>, Range<usize>)> {
         if self.steal_exhausted || indices.len() < 3 {
             return None;
@@ -128,12 +132,20 @@ impl Coordinator {
             let remaining = current_end.saturating_sub(current_start);
 
             // Skip completed or too-small ranges
-            if remaining <= min_steal_bytes {
+            if remaining < 2 || remaining <= min_steal_units {
                 continue;
             }
 
             // Steal 38.2% (1 - PHI^-1) from the top, rounded high
+            // Using units now
             let steal_amount = ((remaining as f32) * 0.382).ceil() as usize;
+
+            // Ensure we don't drain it completely (safety) - already checked >=2
+            // And ensure we steal at least 1 unit if math is tiny (ceil handles it, but check 0)
+            if steal_amount == 0 {
+                continue;
+            }
+
             let new_end = current_end - steal_amount;
 
             // CAS to atomically shrink the victim's range

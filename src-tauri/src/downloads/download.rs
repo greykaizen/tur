@@ -1,7 +1,7 @@
 //! Download struct and persistence
 
 use bincode::{config, error::DecodeError, error::EncodeError, Decode, Encode};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::constants::RANGE;
@@ -13,6 +13,7 @@ use super::index::Index;
 pub struct Download {
     pub coordinator: Coordinator,
     pub range: Vec<Arc<Index>>,
+    pub worker_states: Vec<Arc<AtomicU8>>,
 }
 
 impl Encode for Download {
@@ -35,6 +36,10 @@ impl Encode for Download {
         for index in incomplete {
             index.encode(e)?;
         }
+
+        // Encode worker states snapshot
+        let states = self.snapshot_states();
+        states.encode(e)?;
         Ok(())
     }
 }
@@ -64,7 +69,18 @@ impl<Context> Decode<Context> for Download {
             }
         }
 
-        Ok(Download { coordinator, range })
+        // Decode worker states
+        let state_bytes: Vec<u8> = Decode::decode(d)?;
+        let worker_states = state_bytes
+            .into_iter()
+            .map(|b| Arc::new(AtomicU8::new(b)))
+            .collect();
+
+        Ok(Download {
+            coordinator,
+            range,
+            worker_states,
+        })
     }
 }
 
@@ -77,6 +93,7 @@ impl Download {
         Download {
             coordinator: Coordinator::new(max_index, size),
             range: Vec::with_capacity(num_conn as usize),
+            worker_states: (0..num_conn).map(|_| Arc::new(AtomicU8::new(0))).collect(),
         }
     }
 
@@ -100,6 +117,39 @@ impl Download {
         }
 
         (lo < RANGE.len()).then_some(lo as u8)
+    }
+
+    /// Create Download for resume from a known byte offset
+    /// Treats the remaining bytes (offset..total_size) as a single chunk
+    /// The Coordinator is initialized as "exhausted" so workers only use stealing
+    pub fn from_offset(offset: usize, total_size: usize, num_conn: u8) -> Self {
+        let max_index = Self::get_index(total_size >> 23).unwrap_or(0);
+
+        // Initialize coordinator as if all standard ranges are depleted
+        // current=max_index ensures range_byte is empty
+        let coordinator = Coordinator::from_parts(
+            max_index, // current
+            max_index, // end
+            2,         // steal_ptr
+            false,     // steal_exhausted
+            total_size,
+        );
+
+        let mut range = Vec::with_capacity(num_conn as usize);
+
+        // Create one large index for the remainder
+        if offset < total_size {
+            range.push(Arc::new(Index {
+                start: AtomicUsize::new(offset),
+                end: AtomicUsize::new(total_size),
+            }));
+        }
+
+        Download {
+            coordinator,
+            range,
+            worker_states: (0..num_conn).map(|_| Arc::new(AtomicU8::new(0))).collect(),
+        }
     }
 
     /// Load Download state from disk (for resume)
@@ -154,5 +204,22 @@ impl Download {
                 end.saturating_sub(start)
             })
             .sum()
+    }
+
+    /// Snapshot worker states for serialization
+    pub fn snapshot_states(&self) -> Vec<u8> {
+        self.worker_states
+            .iter()
+            .map(|s| s.load(Ordering::Relaxed))
+            .collect()
+    }
+
+    /// Restore worker states from snapshot (updates in place if lengths match)
+    pub fn restore_states(&self, states: &[u8]) {
+        for (i, state) in states.iter().enumerate() {
+            if let Some(atomic) = self.worker_states.get(i) {
+                atomic.store(*state, Ordering::Relaxed);
+            }
+        }
     }
 }
