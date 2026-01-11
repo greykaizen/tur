@@ -51,7 +51,7 @@ fn create_dummy_context() -> (super::worker_context::WorkerContext, std::path::P
         end: AtomicUsize::new(10),
     });
 
-    let ctx = super::worker_context::WorkerContext::new(0, file, state, index);
+    let ctx = super::worker_context::WorkerContext::new(0, file, state, index, None);
     (ctx, file_path)
 }
 
@@ -340,7 +340,8 @@ proptest! {
              // steal_amount = ceil(3 * 0.382) = 1.14 -> 2.
              // Theft logic works.
              if result.is_some() {
-                 let (_stolen_idx, range) = result.unwrap();
+                 let (_stolen_idx, range, victim) = result.unwrap();
+                 prop_assert_eq!(victim, Some(2), "Should define correct victim index");
 
                  let expected_steal = ((initial_units as f32) * 0.382).ceil() as usize;
                  let stolen_len = range.end - range.start;
@@ -381,7 +382,7 @@ proptest! {
 
          if (50 - 20) > 2 {
              prop_assert!(result.is_some(), "Should have stolen work from Worker C");
-             let (_stolen_idx, range) = result.unwrap();
+              let (_stolen_idx, range, _victim) = result.unwrap();
              prop_assert!(range.len() > 0, "Stolen range must be non-empty");
          } else {
              prop_assert!(result.is_none());

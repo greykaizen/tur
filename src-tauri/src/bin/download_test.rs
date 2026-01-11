@@ -16,6 +16,18 @@ struct WorkerEvent {
     current_unit: usize,
     unit_start_offset: u64,
     unit_end_offset: u64,
+    index_start: usize,
+    index_end: usize,
+    stealing_from: Option<usize>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ErrorEvent {
+    download_id: String,
+    worker_id: u8,
+    code: u16,
+    message: String,
+    fatal: bool,
 }
 
 struct WorkerInfo {
@@ -25,6 +37,9 @@ struct WorkerInfo {
     end_offset: u64,
     state_bits: u8,
     speed: f64, // MB/s
+    index_start: usize,
+    index_end: usize,
+    stealing_from: Option<usize>,
 }
 
 #[tokio::main]
@@ -84,7 +99,19 @@ async fn run_test_logic(app: tauri::AppHandle) {
                     end_offset: payload.unit_end_offset,
                     state_bits: payload.state_bits,
                     speed,
+                    index_start: payload.index_start,
+                    index_end: payload.index_end,
+                    stealing_from: payload.stealing_from,
                 },
+            );
+        }
+    });
+
+    let _ = app.listen("download_error", move |event| {
+        if let Ok(payload) = serde_json::from_str::<ErrorEvent>(event.payload()) {
+            println!(
+                "\n⚠️  Worker {} Error (Fatal: {}): [{}] {}\n",
+                payload.worker_id, payload.fatal, payload.code, payload.message
             );
         }
     });
@@ -101,14 +128,14 @@ async fn run_test_logic(app: tauri::AppHandle) {
         }
     });
 
-    println!("Starting download (VLC Player)...");
+    println!("Starting download (Debian 13.3.0 Netinst)...");
     let url = Url::parse(
-        "https://mirror.bom2.albony.in/videolan-ftp/vlc/3.0.23/win32/vlc-3.0.23-win32.exe",
+        "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.3.0-amd64-netinst.iso",
     )
     .unwrap();
     let item = NewDownloadItem {
         url: url.clone(),
-        filename: Some("vlc-3.0.23-win32.exe".to_string()),
+        filename: Some("debian-13.3.0-netinst.iso".to_string()),
         queue_id: None,
     };
 
@@ -171,10 +198,23 @@ async fn run_test_logic(app: tauri::AppHandle) {
                 // Update Worker Bars
                 let infos = {
                     let guard = worker_infos.lock().unwrap();
-                    guard.iter().map(|(k, v)| (*k, v.current_unit, v.start_offset, v.end_offset, v.speed, v.state_bits)).collect::<Vec<_>>()
+                    guard.iter().map(|(k, v)| (*k, v.current_unit, v.start_offset, v.end_offset, v.speed, v.state_bits, v.index_start, v.index_end, v.stealing_from)).collect::<Vec<_>>()
                 };
 
-                for (wid, unit, start, end, speed_mbs, bits) in infos {
+                fn format_speed(speed_mbs: f64) -> String {
+                     let bytes_per_sec = speed_mbs * 1_000_000.0;
+                     if bytes_per_sec >= 1_000_000_000.0 {
+                         format!("{:.2} GB/s", bytes_per_sec / 1_000_000_000.0)
+                     } else if bytes_per_sec >= 1_000_000.0 {
+                         format!("{:.2} MB/s", bytes_per_sec / 1_000_000.0)
+                     } else if bytes_per_sec >= 1_000.0 {
+                         format!("{:.2} KB/s", bytes_per_sec / 1_000.0)
+                     } else {
+                         format!("{:.0} B/s", bytes_per_sec)
+                     }
+                }
+
+                for (wid, unit, start, end, speed_mbs, bits, idx_start, idx_end, stealing_from) in infos {
                     let bar = worker_bars.entry(wid).or_insert_with(|| {
                         let pb = mp.add(indicatif::ProgressBar::new(100));
                         // Text-only template: "WorkerID | Details"
@@ -197,7 +237,12 @@ async fn run_test_logic(app: tauri::AppHandle) {
                         }
                     }
 
-                    bar.set_message(format!("{}-{}MB | {:.1} MB/s | [{}] Unit: {}", start_mb, end_mb, speed_mbs, bits_str, unit));
+                    let steal_tag = if let Some(victim) = stealing_from {
+                         format!(" | Stealing from W{}", victim)
+                    } else {
+                         String::new()
+                    };
+                    bar.set_message(format!("{}..{} | {}-{}MB | Unit: {} | {} | [{}] {}", idx_start, idx_end, start_mb, end_mb, unit, format_speed(speed_mbs), bits_str, steal_tag));
                     bar.tick();
                 }
             }

@@ -161,13 +161,21 @@ impl DownloadManager {
 
             let url_str = url.as_str();
 
-            // Fetch headers
-            tracing::debug!("  🔍 HEAD request to: {}", url_str);
-            let response = client.head(url_str).send().await.map_err(|e| {
-                tracing::error!("  ❌ HEAD request failed: {}", e);
+            // Probe request (warm up & metadata fetch)
+            // Use GET without Range to mimic browser initial navigation
+            tracing::debug!("  🔍 Probing (GET) to: {}", url_str);
+            let response = client.get(url_str).send().await.map_err(|e| {
+                tracing::error!("  ❌ Probe request failed: {}", e);
                 e.to_string()
             })?;
-            tracing::debug!("  ✅ HEAD response status: {}", response.status());
+
+            let status = response.status();
+            tracing::debug!("  ✅ Probe response status: {}", status);
+
+            if !status.is_success() {
+                return Err(format!("Server returned error status: {}", status));
+            }
+
             let hdrs = response.headers();
 
             // Use custom filename if provided, otherwise extract from headers or URL

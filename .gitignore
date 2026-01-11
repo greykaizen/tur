@@ -35,8 +35,8 @@ lerna-debug.log*
 
 proptest-regressions
 
-backend.md
-backlog.md
+# backend.md
+# backlog.md
 
 node_modules
 dist
@@ -45,7 +45,7 @@ dist-ssr
 
 # Editor directories and files
 .vscode/*
-.kiro/
+# .kiro/
 !.vscode/extensions.json
 .idea
 .DS_Store

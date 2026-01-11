@@ -59,7 +59,7 @@ impl Coordinator {
     pub fn new_range(
         &mut self,
         range_vec: &mut Vec<Arc<Index>>,
-    ) -> Option<(Arc<Index>, Range<usize>)> {
+    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
         if self.range_byte.start < self.range_byte.end {
             let idx = self.range_byte.start as usize;
             self.range_byte.start += 1;
@@ -79,7 +79,7 @@ impl Coordinator {
             });
 
             range_vec.push(index.clone());
-            Some((index, start_unit..end_unit))
+            Some((index, start_unit..end_unit, None))
         } else {
             None
         }
@@ -91,7 +91,7 @@ impl Coordinator {
         &mut self,
         range_vec: &mut Vec<Arc<Index>>,
         min_steal_units: usize,
-    ) -> Option<(Arc<Index>, Range<usize>)> {
+    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
         // 1. Try to get new range
         if let Some(result) = self.new_range(range_vec) {
             return Some(result);
@@ -109,7 +109,7 @@ impl Coordinator {
         &mut self,
         indices: &mut Vec<Arc<Index>>,
         min_steal_units: usize,
-    ) -> Option<(Arc<Index>, Range<usize>)> {
+    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
         if self.steal_exhausted || indices.len() < 3 {
             return None;
         }
@@ -166,7 +166,7 @@ impl Coordinator {
                 // Update steal_ptr for next attempt
                 self.steal_ptr = ((target + 1) % num_indices) as u8;
 
-                return Some((stolen_index, new_end..current_end));
+                return Some((stolen_index, new_end..current_end, Some(target)));
             }
         }
 

@@ -1,6 +1,6 @@
 use super::index::Index;
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub struct WorkerContext {
@@ -10,11 +10,17 @@ pub struct WorkerContext {
     pub index: Arc<Index>,
     pub bytes_in_unit: AtomicUsize,
     pub speed_bps: AtomicUsize,
-    pub is_stealing: AtomicBool,
+    pub stealing_from: AtomicUsize,
 }
 
 impl WorkerContext {
-    pub fn new(worker_id: usize, file: File, state: Arc<AtomicU8>, index: Arc<Index>) -> Self {
+    pub fn new(
+        worker_id: usize,
+        file: File,
+        state: Arc<AtomicU8>,
+        index: Arc<Index>,
+        is_stealing: Option<usize>,
+    ) -> Self {
         Self {
             worker_id,
             file,
@@ -22,7 +28,7 @@ impl WorkerContext {
             index,
             bytes_in_unit: AtomicUsize::new(0),
             speed_bps: AtomicUsize::new(0),
-            is_stealing: AtomicBool::new(false),
+            stealing_from: AtomicUsize::new(is_stealing.unwrap_or(usize::MAX)),
         }
     }
 

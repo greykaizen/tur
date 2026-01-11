@@ -335,7 +335,7 @@ fn run_multi_threaded<R: tauri::Runtime>(
     handle: tauri::AppHandle<R>,
 ) -> Vec<JoinHandle<()>> {
     // Channel for worker -> coordinator
-    type WorkResponse = Option<(Arc<Index>, Range<usize>)>;
+    type WorkResponse = Option<(Arc<Index>, Range<usize>, Option<usize>)>;
     let (tx, mut rx) = mpsc::channel::<oneshot::Sender<WorkResponse>>(num_threads as usize * 2);
 
     let mut handles = Vec::new();
@@ -389,7 +389,7 @@ fn run_multi_threaded<R: tauri::Runtime>(
                 }
 
                 match reply_rx.await {
-                    Ok(Some((index, _unit_range))) => {
+                    Ok(Some((index, _unit_range, stealing_from))) => {
                         let mut current_unit = index.start.load(Ordering::Relaxed);
 
                         while current_unit < index.end.load(Ordering::Relaxed) {
@@ -405,6 +405,7 @@ fn run_multi_threaded<R: tauri::Runtime>(
                                         f_clone,
                                         worker_state.clone(),
                                         index.clone(),
+                                        stealing_from,
                                     );
 
                                     let success = download_unit(
@@ -501,7 +502,7 @@ fn run_single_threaded<R: tauri::Runtime>(
                             Arc::new(std::sync::atomic::AtomicU8::new(0))
                         };
 
-                        let context = WorkerContext::new(0, f_clone, state, idx.clone());
+                        let context = WorkerContext::new(0, f_clone, state, idx.clone(), None);
 
                         let success = download_unit(
                             &client,
@@ -582,6 +583,18 @@ async fn download_unit<R: tauri::Runtime>(
         }
 
         let mut req = client.get(url);
+
+        // Auto-Referer: Use origin as referer to bypass hotlink protection
+        if let Ok(parsed) = url::Url::parse(url) {
+            if let Some(host) = parsed.host_str() {
+                let scheme = parsed.scheme();
+                let referer = format!("{}://{}/", scheme, host);
+                req = req.header("Referer", referer);
+                // Adjust Sec-Fetch-Site since we are faking internal nav
+                req = req.header("Sec-Fetch-Site", "same-origin");
+            }
+        }
+
         // Resume from actual_start_byte
         req = req.header("Range", format!("bytes={}-{}", actual_start_byte, end_byte));
 
@@ -604,8 +617,86 @@ async fn download_unit<R: tauri::Runtime>(
         };
 
         let status = response.status();
-        if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::PARTIAL_CONTENT {
+        let headers = response.headers();
+
+        tracing::debug!(
+            "Worker {} req {} response: {} (Range: {}-{})",
+            context.worker_id,
+            retries,
+            status,
+            actual_start_byte,
+            end_byte
+        );
+
+        if status == reqwest::StatusCode::OK {
+            // Server ignored Range header
+            if actual_start_byte > 0 {
+                // We requested a partial range but got the whole file.
+                // We can't efficienty resume or split.
+                tracing::error!(
+                     "Worker {} requested range {}-{} but server sent 200 OK (ignored range). Aborting unit.",
+                     context.worker_id,
+                     actual_start_byte,
+                     end_byte
+                 );
+                return false;
+            }
+            // If actual_start_byte == 0, we can accept it (it's arguably the "first" chunk),
+            // but we must be careful not to read past end_byte if we only wanted a slice.
+            // However, Response::bytes_stream() will give us everything.
+            // Ideally we should limit the stream, but for now we'll accept it and let the loop below
+            // just read what it needs. A "Take" adapter would be better.
+            tracing::info!(
+                "Worker {} got 200 OK for start=0. Proceeding.",
+                context.worker_id
+            );
+        } else if status == reqwest::StatusCode::PARTIAL_CONTENT {
+            // Validate Content-Range
+            if let Some(cr) = headers
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+            {
+                // Expected format: "bytes <start>-<end>/<total>"
+                // We just check if it starts with "bytes <actual_start_byte>-"
+                let expected_prefix = format!("bytes {}-", actual_start_byte);
+                if !cr.starts_with(&expected_prefix) {
+                    tracing::error!(
+                        "Worker {} Content-Range mismatch. Requested start {}, got {}",
+                        context.worker_id,
+                        actual_start_byte,
+                        cr
+                    );
+                    return false;
+                }
+            }
+        } else if status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::UNAUTHORIZED
+        {
+            // 403/401: Fatal Auth Error
+            tracing::error!("Worker {} Fatal Auth Error: {}", context.worker_id, status);
+            let _ = handle.emit(
+                "download_error",
+                serde_json::json!({
+                    "id": download_id,
+                    "worker_id": context.worker_id,
+                    "code": status.as_u16(),
+                    "message": format!("Authentication failed: {}", status),
+                    "fatal": true
+                }),
+            );
+            return false;
+        } else if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            // 503/429: Server busy, retry
+            tracing::warn!("Worker {} Server Busy: {}", context.worker_id, status);
+            // Let retry logic handle it
+        } else {
             tracing::error!("Unexpected status: {}", status);
+            // Treat as retryable generic error unless retries exhausted
+        }
+
+        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
             if retries < retry_count {
                 retries += 1;
                 tokio::time::sleep(Duration::from_millis(exponential_backoff(
@@ -614,8 +705,20 @@ async fn download_unit<R: tauri::Runtime>(
                 )))
                 .await;
                 continue;
+            } else {
+                // Retries exhausted
+                let _ = handle.emit(
+                    "download_error",
+                    serde_json::json!({
+                        "id": download_id,
+                        "worker_id": context.worker_id,
+                        "code": status.as_u16(),
+                        "message": format!("Request failed after retries: {}", status),
+                        "fatal": true
+                    }),
+                );
+                return false;
             }
-            return false;
         }
 
         use futures_util::StreamExt;
@@ -674,13 +777,19 @@ async fn download_unit<R: tauri::Runtime>(
                                     if bit < 8 {
                                         context.flip_bit(bit as u8);
                                         // Emit progress event
+                                        let stealing_val = context.stealing_from.load(Ordering::Relaxed);
+                                        let stealing_opt = if stealing_val == usize::MAX { None } else { Some(stealing_val) };
+
                                         let _ = handle.emit("worker_progress", serde_json::json!({
                                            "download_id": download_id,
                                            "worker_id": context.worker_id,
                                            "state_bits": context.state.load(Ordering::Relaxed),
                                            "current_unit": unit_index,
                                            "unit_start_offset": start_byte,
-                                           "unit_end_offset": end_byte + 1
+                                           "unit_end_offset": end_byte + 1,
+                                           "index_start": context.index.start.load(Ordering::Relaxed),
+                                           "index_end": context.index.end.load(Ordering::Relaxed),
+                                           "stealing_from": stealing_opt
                                         }));
                                     }
                                 }
