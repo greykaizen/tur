@@ -13,7 +13,19 @@ pub mod queue;
 pub mod settings;
 pub mod tray;
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Conditional tracing configuration
+    #[cfg(debug_assertions)]
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
+    #[cfg(not(debug_assertions))]
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
@@ -27,7 +39,7 @@ pub fn run() {
 
             // Handle download URL from CLI/extension
             if let Some(url) = &parsed_args.download_url {
-                eprintln!("[tur] Single-instance: received download URL: {}", url);
+                tracing::info!("[tur] Single-instance: received download URL: {}", url);
                 open_download_window_internal(
                     app.clone(),
                     url.clone(),
@@ -74,6 +86,7 @@ pub fn run() {
             get_default_download_path,
             close_download_window,
             open_download_window,
+            open_download_options_window,
             start_ytdlp_download,
             downloads::manager::handle_download_request,
             downloads::manager::pause_download,
@@ -82,7 +95,7 @@ pub fn run() {
             downloads::manager::active_download_count,
             downloads::manager::get_download_history,
             downloads::manager::request_shutdown,
-            downloads::manager::delete_download_history,
+            downloads::manager::delete_download,
             delete_download_file,
             open_path,
             queue::create_queue,
@@ -118,6 +131,45 @@ pub fn run() {
             let download_manager = downloads::DownloadManager::new();
             app.manage(download_manager);
 
+            // Start background queue processor
+            let handle_for_bg = app.handle().clone();
+            let manager_for_bg = app.state::<downloads::DownloadManager>();
+            manager_for_bg.start_background_task(handle_for_bg);
+
+            // Auto-resume on startup (runs immediately, not blocked by signal handler)
+            let handle_for_resume = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = handle_for_resume.state::<downloads::DownloadManager>();
+                let settings = settings::load_or_create(&handle_for_resume);
+                if settings.app.auto_resume {
+                    if let Ok(db) = database::Database::initialize(&handle_for_resume).map_err(|e| e.to_string()) {
+                        // Get pending downloads (paused or interrupted), limit to max_concurrent
+                        let limit = if settings.download.max_concurrent > 0 {
+                            settings.download.max_concurrent as usize
+                        } else {
+                            50 // Reasonable default for unlimited
+                        };
+                        if let Ok(queued) = db.get_queued_downloads(limit) {
+                            let resume_ids: Vec<uuid::Uuid> = queued.iter().map(|d| d.id).collect();
+                            if !resume_ids.is_empty() {
+                                tracing::info!("🚀 Auto-resuming {} pending downloads", resume_ids.len());
+                                let request = downloads::manager::DownloadRequest::Resume(resume_ids);
+                                if let Err(e) = manager.handle_request(&handle_for_resume, request).await {
+                                    tracing::error!("Failed to auto-resume downloads: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Start graceful shutdown signal handler (blocks until signal received)
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = handle.state::<downloads::DownloadManager>();
+                manager.start_signal_handler(handle.clone()).await;
+            });
+
             // Set up global menu
             if let Ok(menu) = menu::create_menu(app.handle()) {
                 let _ = app.set_menu(menu);
@@ -125,7 +177,7 @@ pub fn run() {
 
             // Set up system tray based on settings
             if let Err(e) = tray::setup_tray(app.handle()) {
-                eprintln!("Warning: Failed to set up system tray: {}", e);
+                tracing::warn!("Failed to set up system tray: {}", e);
             }
 
             // Parse command line arguments
@@ -140,15 +192,15 @@ pub fn run() {
                 .unwrap_or(false);
 
             if is_native_messaging || args.native_messaging {
-                eprintln!("[tur] Starting in native messaging mode");
+                tracing::info!("[tur] Starting in native messaging mode");
                 let rx = native_host::start_native_messaging_thread();
                 let app_handle = app.handle().clone();
 
                 // Spawn thread to handle download actions from native messaging
                 std::thread::spawn(move || {
-                    eprintln!("[tur] Download action handler thread started");
+                    tracing::info!("[tur] Download action handler thread started");
                     while let Ok(action) = rx.recv() {
-                        eprintln!("[tur] Received action from native messaging");
+                        tracing::debug!("[tur] Received action from native messaging");
                         match action {
                             native_host::HostAction::OpenDownload {
                                 url,
@@ -159,8 +211,8 @@ pub fn run() {
                                 video_stream_url,
                                 audio_stream_url,
                             } => {
-                                eprintln!("[tur] OpenDownload action received, url: {}", url);
-                                eprintln!("[tur] Calling open_download_window_internal...");
+                                tracing::info!("[tur] OpenDownload action received, url: {}", url);
+                                tracing::debug!("[tur] Calling open_download_window_internal...");
                                 open_download_window_internal(
                                     app_handle.clone(),
                                     url,
@@ -172,11 +224,11 @@ pub fn run() {
                                     video_stream_url,
                                     audio_stream_url,
                                 );
-                                eprintln!("[tur] open_download_window_internal returned");
+                                tracing::debug!("[tur] open_download_window_internal returned");
                             }
                         }
                     }
-                    eprintln!("[tur] Download action handler thread ended");
+                    tracing::info!("[tur] Download action handler thread ended");
                 });
             }
 
@@ -279,7 +331,7 @@ fn get_default_download_path(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn close_download_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
     use tauri::Manager;
-    eprintln!("[tur] Closing download window: {}", label);
+    tracing::info!("[tur] Closing download window: {}", label);
 
     if let Some(window) = app.get_webview_window(&label) {
         window.close().map_err(|e| e.to_string())
@@ -299,9 +351,13 @@ async fn start_ytdlp_download(
 ) -> Result<String, String> {
     use std::process::Command;
 
-    eprintln!(
+    tracing::info!(
         "[tur] Starting yt-dlp download: {} format: {} audio: {:?} -> {}/{}",
-        url, format_id, audio_id, output_path, filename
+        url,
+        format_id,
+        audio_id,
+        output_path,
+        filename
     );
 
     // Find yt-dlp binary
@@ -332,7 +388,7 @@ async fn start_ytdlp_download(
         .spawn()
         .map_err(|e| format!("Failed to start yt-dlp: {}", e))?;
 
-    eprintln!("[tur] yt-dlp started with PID: {:?}", child.id());
+    tracing::info!("[tur] yt-dlp started with PID: {:?}", child.id());
 
     Ok(format!("Download started: {}", filename))
 }
@@ -377,7 +433,7 @@ fn open_download_window_internal(
     video_stream_url: Option<String>,
     audio_stream_url: Option<String>,
 ) {
-    eprintln!(
+    tracing::debug!(
         "[tur] open_download_window_internal called with url: {}",
         url
     );
@@ -407,7 +463,7 @@ fn open_download_window_internal(
         query.push_str(&format!("&audioStreamUrl={}", urlencoding::encode(&as_)));
     }
 
-    eprintln!("[tur] Query string: {}", query);
+    tracing::debug!("[tur] Query string: {}", query);
 
     // Create unique window label for each download
     let window_label = format!(
@@ -418,7 +474,7 @@ fn open_download_window_internal(
             .as_millis()
     );
 
-    eprintln!("[tur] Creating download window: {}", window_label);
+    tracing::info!("[tur] Creating download window: {}", window_label);
     let webview_url = tauri::WebviewUrl::App(format!("/download?{}", query).into());
 
     if let Err(e) = tauri::WebviewWindowBuilder::new(&app, &window_label, webview_url)
@@ -429,10 +485,43 @@ fn open_download_window_internal(
         .center()
         .build()
     {
-        eprintln!("[tur] Failed to create download window: {}", e);
+        tracing::error!("[tur] Failed to create download window: {}", e);
     } else {
-        eprintln!("[tur] Download window created successfully");
+        tracing::info!("[tur] Download window created successfully");
     }
+}
+
+/// Open the download options window with URLs
+#[tauri::command]
+async fn open_download_options_window(
+    app: tauri::AppHandle,
+    urls: Vec<String>,
+) -> Result<(), String> {
+    let window_label = format!(
+        "download_options_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let json_urls = serde_json::to_string(&urls).map_err(|e| e.to_string())?;
+    let encoded_urls = urlencoding::encode(&json_urls);
+    let url = format!("/download-options?urls={}", encoded_urls);
+
+    let webview_url = tauri::WebviewUrl::App(url.into());
+
+    let _window = tauri::WebviewWindowBuilder::new(&app, &window_label, webview_url)
+        .title("Download Options")
+        .inner_size(520.0, 600.0)
+        .decorations(false)
+        .transparent(true)
+        .center()
+        .always_on_top(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Open the download dialog window with URL parameters
@@ -443,8 +532,6 @@ async fn open_download_window(
     format_id: Option<String>,
     audio_id: Option<String>,
 ) -> Result<(), String> {
-    use tauri::Manager;
-
     // Build query string
     let mut query = format!("url={}", urlencoding::encode(&url));
     if let Some(f) = format_id {
@@ -510,7 +597,7 @@ fn delete_download_file(file_path: String) -> Result<(), String> {
     let path = Path::new(&file_path);
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
-        eprintln!("[tur] Deleted file: {}", file_path);
+        tracing::info!("[tur] Deleted file: {}", file_path);
         Ok(())
     } else {
         Err("File not found".to_string())

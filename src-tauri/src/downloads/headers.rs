@@ -90,3 +90,19 @@ pub fn parse_deep_link(url_str: &str) -> Option<(Url, Option<String>, Option<u64
 
     Some((src_url, filename, size_opt))
 }
+
+/// Check if download needs to be restarted based on file existence and header changes
+pub fn should_restart_download(
+    file_exists: bool,
+    stored_etag: Option<&str>,
+    server_etag: Option<&str>,
+    stored_modified: Option<&str>,
+    server_modified: Option<&str>,
+    stored_size: Option<i64>,
+    server_size: Option<i64>,
+) -> bool {
+    !file_exists
+        || (stored_etag.is_some() && stored_etag != server_etag)
+        || (stored_modified.is_some() && stored_modified != server_modified)
+        || (stored_size.is_some() && stored_size != server_size)
+}

@@ -17,6 +17,9 @@ pub mod download;
 pub mod headers;
 pub mod index;
 pub mod manager;
+#[cfg(test)]
+pub mod tests;
+pub mod worker_context;
 pub mod workers;
 
 // Re-export main types for convenient access

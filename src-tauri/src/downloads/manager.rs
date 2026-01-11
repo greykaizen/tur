@@ -4,9 +4,12 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex}; // Added Arc here, Mutex was already present
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::mpsc; // Added this import
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken; // Added this import
 use url::Url;
 use uuid::Uuid;
 
@@ -18,7 +21,7 @@ use super::headers;
 use super::workers::run_download;
 use crate::database::Database;
 use crate::downloads::client;
-use crate::settings::{self, config::AppSettings};
+use crate::settings::{self, AppSettings}; // Modified this import (removed `config::`)
 
 /// Resolves destination path conflicts by adding numeric suffix like (1), (2), etc.
 /// Returns the resolved path and potentially modified filename.
@@ -87,15 +90,29 @@ pub enum DownloadRequest {
     New(Vec<NewDownloadItem>),
     Resume(Vec<Uuid>),
 }
+use super::index::Index; // Need Index
+
+pub struct DownloadInstance {
+    pub handles: Vec<JoinHandle<()>>,
+    pub cancel_token: CancellationToken,
+    pub indices: Arc<Mutex<Vec<Arc<Index>>>>,
+    pub queue_id: Option<Uuid>,
+    pub bytes_downloaded: Arc<AtomicUsize>,
+}
 
 pub struct DownloadManager {
-    instances: Mutex<HashMap<Uuid, Vec<JoinHandle<()>>>>,
+    instances: Mutex<HashMap<Uuid, DownloadInstance>>,
+    completion_tx: mpsc::Sender<Uuid>,
+    completion_rx: Mutex<Option<mpsc::Receiver<Uuid>>>,
 }
 
 impl DownloadManager {
     pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(100);
         Self {
             instances: Mutex::new(HashMap::new()),
+            completion_tx: tx,
+            completion_rx: Mutex::new(Some(rx)),
         }
     }
 
@@ -145,12 +162,12 @@ impl DownloadManager {
             let url_str = url.as_str();
 
             // Fetch headers
-            eprintln!("  🔍 HEAD request to: {}", url_str);
+            tracing::debug!("  🔍 HEAD request to: {}", url_str);
             let response = client.head(url_str).send().await.map_err(|e| {
-                eprintln!("  ❌ HEAD request failed: {}", e);
+                tracing::error!("  ❌ HEAD request failed: {}", e);
                 e.to_string()
             })?;
-            eprintln!("  ✅ HEAD response status: {}", response.status());
+            tracing::debug!("  ✅ HEAD response status: {}", response.status());
             let hdrs = response.headers();
 
             // Use custom filename if provided, otherwise extract from headers or URL
@@ -192,13 +209,13 @@ impl DownloadManager {
                 item.queue_id.as_ref(),
             )
             .map_err(|e| {
-                eprintln!("  ❌ DB insert failed: {}", e);
+                tracing::error!("  ❌ DB insert failed: {}", e);
                 e.to_string()
             })?;
-            eprintln!("  ✅ DB insert success, id: {}", id);
+            tracing::debug!("  ✅ DB insert success, id: {}", id);
 
             // Emit to frontend
-            eprintln!("  📡 Emitting queue_download event for: {}", filename);
+            tracing::info!("  📡 Emitting queue_download event for: {}", filename);
             let num_connections = if resume_supported {
                 settings.download.num_threads
             } else {
@@ -220,13 +237,13 @@ impl DownloadManager {
             );
 
             // Create and run download
-            eprintln!("  🚀 Starting download, size: {:?}", size);
+            tracing::info!("  🚀 Starting download, size: {:?}", size);
             let download = Download::new(size.unwrap_or(0) as usize, settings.download.num_threads);
             if let Err(e) = download.save(app, &id) {
-                eprintln!("Failed to save download state: {}", e);
+                tracing::error!("Failed to save download state: {}", e);
             }
 
-            let handles = run_download(
+            let (handles, cancel_token, indices, bytes_downloaded) = run_download(
                 download,
                 id,
                 url_str.to_string(),
@@ -234,9 +251,17 @@ impl DownloadManager {
                 size.unwrap_or(0) as usize,
                 app,
                 settings,
+                self.completion_tx.clone(),
             );
-            eprintln!("  ✅ Download started with {} handles", handles.len());
-            self.add_instance(id, handles);
+            tracing::info!("  ✅ Download started with {} handles", handles.len());
+            self.add_instance(
+                id,
+                handles,
+                cancel_token,
+                indices,
+                item.queue_id,
+                bytes_downloaded,
+            );
         }
         Ok(())
     }
@@ -269,7 +294,7 @@ impl DownloadManager {
             let response = match client.head(&download.url).send().await {
                 Ok(resp) => resp,
                 Err(e) => {
-                    eprintln!("Failed to fetch headers for {}: {}", download.url, e);
+                    tracing::error!("Failed to fetch headers for {}: {}", download.url, e);
                     continue;
                 }
             };
@@ -280,11 +305,15 @@ impl DownloadManager {
             let server_size = headers::extract_content_length(hdrs).map(|s| s as i64);
             let resume_supported = headers::supports_resume(hdrs);
 
-            let needs_restart = !file_exists
-                || (download.etag.is_some() && server_etag != download.etag)
-                || (download.last_modified.is_some()
-                    && server_last_modified != download.last_modified)
-                || (download.size.is_some() && server_size != download.size);
+            let needs_restart = headers::should_restart_download(
+                file_exists,
+                download.etag.as_deref(),
+                server_etag.as_deref(),
+                download.last_modified.as_deref(),
+                server_last_modified.as_deref(),
+                download.size,
+                server_size,
+            );
 
             if needs_restart {
                 let _ = db.update_headers(
@@ -324,15 +353,16 @@ impl DownloadManager {
             let download_instance = match Download::load(app, &download.id) {
                 Ok(instance) => instance,
                 Err(e) => {
-                    eprintln!(
+                    tracing::error!(
                         "Failed to load download instance for {}: {}",
-                        download.id, e
+                        download.id,
+                        e
                     );
                     continue;
                 }
             };
 
-            let handles = run_download(
+            let (handles, cancel_token, indices, bytes_downloaded) = run_download(
                 download_instance,
                 download.id,
                 download.url.clone(),
@@ -340,22 +370,97 @@ impl DownloadManager {
                 server_size.unwrap_or(0) as usize,
                 app,
                 settings,
+                self.completion_tx.clone(),
             );
-            self.add_instance(download.id, handles);
+
+            // Update status to in-progress (NULL)
+            let _ = db.update_status(&download.id, None);
+
+            self.add_instance(
+                download.id,
+                handles,
+                cancel_token,
+                indices,
+                download.queue_id,
+                bytes_downloaded,
+            );
         }
         Ok(())
     }
 
-    pub fn add_instance(&self, id: Uuid, handles: Vec<JoinHandle<()>>) {
-        self.instances.lock().unwrap().insert(id, handles);
+    pub fn add_instance(
+        &self,
+        id: Uuid,
+        handles: Vec<JoinHandle<()>>,
+        cancel_token: CancellationToken,
+        indices: Arc<Mutex<Vec<Arc<Index>>>>,
+        queue_id: Option<Uuid>,
+        bytes_downloaded: Arc<AtomicUsize>,
+    ) {
+        self.instances.lock().unwrap().insert(
+            id,
+            DownloadInstance {
+                handles,
+                cancel_token,
+                indices,
+                queue_id,
+                bytes_downloaded,
+            },
+        );
+    }
+
+    /// Get the current in-memory bytes downloaded for a specific instance
+    pub fn get_bytes_downloaded(&self, id: &Uuid) -> Option<usize> {
+        self.instances.lock().unwrap().get(id).map(|instance| {
+            instance
+                .bytes_downloaded
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
     }
 
     /// Pause a download
-    pub fn pause_instance(&self, id: &Uuid, app: &AppHandle) -> bool {
-        if let Some(handles) = self.instances.lock().unwrap().remove(id) {
-            for handle in handles {
+    pub fn pause_instance(&self, id: &Uuid, app: &AppHandle, db: &Database) -> bool {
+        // 1. Check if active (avoid work if not needed)
+        if !self.is_active(id) {
+            return false;
+        }
+
+        // 2. Get info from DB for reconstruction
+        let download_info = match db.get_download_by_id(id) {
+            Ok(Some(info)) => info,
+            _ => return false,
+        };
+
+        // 3. Create State from DB progress & Save
+        let total_size = download_info.size.unwrap_or(0) as usize;
+        let bytes_rec = download_info.bytes_received as usize;
+
+        // Load settings to get num_threads preference
+        let settings = settings::load_or_create(app);
+        let num_threads = settings.download.num_threads;
+
+        let download_state = Download::from_offset(bytes_rec, total_size, num_threads);
+
+        if let Err(e) = download_state.save(app, id) {
+            tracing::error!("Failed to save state on pause for {}: {}", id, e);
+        }
+
+        // 4. Update DB status
+        if let Err(e) = db.update_status(id, Some("paused")) {
+            tracing::error!("Failed to update DB status on pause for {}: {}", id, e);
+        }
+
+        // 5. Cancel and Abort Workers
+        if let Some(instance) = self.instances.lock().unwrap().remove(id) {
+            // Signal cancellation first
+            instance.cancel_token.cancel();
+
+            // Abort handles as backup
+            for handle in instance.handles {
                 handle.abort();
             }
+
+            // 6. Emit Event
             let _ = app.emit(
                 &format!("download_paused_{}", id),
                 json!({"id": id.to_string()}),
@@ -365,18 +470,77 @@ impl DownloadManager {
         false
     }
 
-    /// Cancel a download
-    pub fn cancel_instance(&self, id: &Uuid, app: &AppHandle) -> bool {
-        if self.pause_instance(id, app) {
-            let meta_path = Download::meta_path(app, id);
-            let _ = std::fs::remove_file(meta_path);
-            let _ = app.emit(
-                &format!("download_cancelled_{}", id),
-                json!({"id": id.to_string()}),
-            );
-            return true;
+    /// Cancel a download (stop workers, keep files for later restart)
+    pub fn cancel_instance(&self, id: &Uuid, app: &AppHandle, db: &Database) -> bool {
+        // 1. Get download info for state saving
+        let download_info = match db.get_download_by_id(id) {
+            Ok(Some(info)) => info,
+            _ => return false,
+        };
+
+        // 2. Save current state before stopping
+        let settings = settings::load_or_create(app);
+        let state = Download::from_offset(
+            download_info.bytes_received as usize,
+            download_info.size.unwrap_or(0) as usize,
+            settings.download.num_threads,
+        );
+        if let Err(e) = state.save(app, id) {
+            tracing::error!("Failed to save state on cancel for {}: {}", id, e);
         }
-        false
+
+        // 3. Stop workers
+        if let Some(instance) = self.instances.lock().unwrap().remove(id) {
+            instance.cancel_token.cancel();
+            for handle in instance.handles {
+                handle.abort();
+            }
+        }
+
+        // 4. Update DB status to 'cancelled' (keeps metadata + partial file)
+        let _ = db.update_status(id, Some("cancelled"));
+
+        // 5. Emit event
+        let _ = app.emit(
+            &format!("download_cancelled_{}", id),
+            json!({"id": id.to_string()}),
+        );
+        true
+    }
+
+    /// Delete a download completely (remove files, metadata, and DB record)
+    pub fn delete_instance(&self, id: &Uuid, app: &AppHandle, db: &Database) -> bool {
+        // 1. Stop workers if active
+        if let Some(instance) = self.instances.lock().unwrap().remove(id) {
+            instance.cancel_token.cancel();
+            for handle in instance.handles {
+                handle.abort();
+            }
+        }
+
+        // 2. Delete metadata file
+        let meta_path = Download::meta_path(app, id);
+        if meta_path.exists() {
+            let _ = std::fs::remove_file(meta_path);
+        }
+
+        // 3. Delete partial download file
+        if let Ok(Some(info)) = db.get_download_by_id(id) {
+            let path = PathBuf::from(&info.destination);
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+
+        // 4. Delete DB record
+        let _ = db.delete_download(id);
+
+        // 5. Emit event
+        let _ = app.emit(
+            &format!("download_deleted_{}", id),
+            json!({"id": id.to_string()}),
+        );
+        true
     }
 
     /// Check if download is active
@@ -389,18 +553,55 @@ impl DownloadManager {
         self.instances.lock().unwrap().len()
     }
 
-    /// Shutdown all active downloads
+    /// Shutdown all active downloads gracefully (save state, update DB, abort)
+    pub fn shutdown_all_graceful(&self, app: &AppHandle, db: &Database) {
+        let mut instances = self.instances.lock().unwrap();
+        tracing::info!(
+            "[tur] Shutting down {} active downloads...",
+            instances.len()
+        );
+
+        for (id, instance) in instances.drain() {
+            // 1. Save state
+            if let Ok(Some(info)) = db.get_download_by_id(&id) {
+                // Use default settings if load fails
+                let settings = settings::load_or_create(app);
+                let state = Download::from_offset(
+                    info.bytes_received as usize,
+                    info.size.unwrap_or(0) as usize,
+                    settings.download.num_threads,
+                );
+
+                if let Err(e) = state.save(app, &id) {
+                    tracing::error!("Failed to save state during shutdown for {}: {}", id, e);
+                }
+
+                if let Err(e) = db.update_status(&id, Some("paused")) {
+                    tracing::error!("Failed to update status during shutdown for {}: {}", id, e);
+                }
+            }
+
+            // 2. Abort workers
+            instance.cancel_token.cancel();
+            for handle in instance.handles {
+                handle.abort();
+            }
+        }
+    }
+
+    /// Basic shutdown (abort only)
     pub fn shutdown_all(&self) {
         let mut instances = self.instances.lock().unwrap();
-        for (_, handles) in instances.drain() {
-            for handle in handles {
+        for (_, instance) in instances.drain() {
+            instance.cancel_token.cancel();
+            for handle in instance.handles {
                 handle.abort();
             }
         }
     }
 
     /// Start signal handler for graceful shutdown
-    pub async fn start_signal_handler(&self) {
+    pub async fn start_signal_handler(&self, app: AppHandle) {
         #[cfg(unix)]
         {
             let mut sigterm = signal::unix::signal(SignalKind::terminate())
@@ -410,16 +611,13 @@ impl DownloadManager {
 
             tokio::select! {
                 _ = signal::ctrl_c() => {
-                    eprintln!("Received Ctrl+C, shutting down...");
-                    self.shutdown_all();
+                    tracing::info!("Received Ctrl+C, shutting down...");
                 },
                 _ = sigterm.recv() => {
-                    eprintln!("Received SIGTERM, shutting down...");
-                    self.shutdown_all();
+                    tracing::info!("Received SIGTERM, shutting down...");
                 },
                 _ = sigint.recv() => {
-                    eprintln!("Received SIGINT, shutting down...");
-                    self.shutdown_all();
+                    tracing::info!("Received SIGINT, shutting down...");
                 },
             }
         }
@@ -427,12 +625,123 @@ impl DownloadManager {
         #[cfg(not(unix))]
         {
             if let Err(e) = signal::ctrl_c().await {
-                eprintln!("Failed to listen for Ctrl+C: {}", e);
-                return;
+                tracing::error!("Failed to listen for Ctrl+C: {}", e);
+            } else {
+                tracing::info!("Received Ctrl+C, shutting down...");
             }
-            eprintln!("Received Ctrl+C, shutting down...");
+        }
+
+        // Execute graceful shutdown
+        if let Ok(db) = Database::initialize(&app) {
+            self.shutdown_all_graceful(&app, &db);
+        } else {
             self.shutdown_all();
         }
+        app.exit(0);
+    }
+
+    /// Start background task to process queue upon completion
+    pub fn start_background_task(&self, app: AppHandle) {
+        let mut rx_opt = self.completion_rx.lock().unwrap();
+        if let Some(mut rx) = rx_opt.take() {
+            let app_clone = app.clone();
+            tokio::spawn(async move {
+                tracing::info!("🔄 Queue processor started");
+                // Initial check on startup
+                if let Err(e) = Self::check_and_start_next(&app_clone).await {
+                    tracing::error!("Failed to perform initial queue check: {}", e);
+                }
+                while let Some(completed_id) = rx.recv().await {
+                    tracing::info!("✅ Download completed signal received: {}", completed_id);
+                    // Trigger check for next download
+                    if let Err(e) = Self::check_and_start_next(&app_clone).await {
+                        tracing::error!("Failed to process queue: {}", e);
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn get_active_download_indices(&self, id: &Uuid) -> Option<Vec<(usize, usize)>> {
+        let instances = self.instances.lock().unwrap();
+        if let Some(instance) = instances.get(id) {
+            let indices = instance.indices.lock().unwrap();
+            Some(
+                indices
+                    .iter()
+                    .map(|idx| {
+                        (
+                            idx.start.load(std::sync::atomic::Ordering::Relaxed),
+                            idx.end.load(std::sync::atomic::Ordering::Relaxed),
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// Check if queue logic needs to run (e.g. on startup or completion)
+    async fn check_and_start_next(app: &AppHandle) -> Result<(), String> {
+        let manager = app.state::<DownloadManager>();
+        let db = Database::initialize(app).map_err(|e| e.to_string())?;
+
+        // Load settings
+        let settings = settings::load_or_create(app);
+
+        let max_concurrent = settings.download.max_concurrent as usize;
+        let active = manager.active_count();
+
+        if max_concurrent > 0 && active >= max_concurrent {
+            tracing::debug!(
+                "Queue check: Max concurrent reached ({}/{})",
+                active,
+                max_concurrent
+            );
+            return Ok(());
+        }
+
+        let slots_available = if max_concurrent == 0 {
+            5
+        } else {
+            max_concurrent - active
+        };
+        if slots_available == 0 {
+            return Ok(());
+        }
+
+        // Find queued downloads (status = 'queued' or 'pending')
+        // We need a DB query for this.
+        let pending = db
+            .get_queued_downloads(slots_available)
+            .map_err(|e| e.to_string())?;
+
+        if pending.is_empty() {
+            tracing::debug!("Queue check: No pending downloads");
+            return Ok(());
+        }
+
+        tracing::info!("🚀 Auto-starting {} pending downloads", pending.len());
+
+        // Start them (logic similar to resume)
+        // We can reuse handle_resume_downloads logic if we just pass IDs?
+        // But 'queued' items might be 'New' (never started) or 'Resume' (interrupted).
+        // Database `Download` struct handles both.
+        // `handle_resume_downloads` loads from DB.
+
+        let uuids: Vec<Uuid> = pending.iter().map(|d| d.id).collect();
+        // Since we are inside async task, we can call handle_resume_downloads?
+        // But handle_resume_downloads is on `&self`. `manager` is `State`.
+
+        // We need HTTP client.
+        let client = client::create(&settings)?;
+
+        manager
+            .handle_resume_downloads(app, &db, &client, &settings, uuids)
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -453,10 +762,10 @@ pub async fn handle_download_request(
     manager: tauri::State<'_, DownloadManager>,
     request: DownloadRequest,
 ) -> Result<(), String> {
-    eprintln!("📥 handle_download_request called: {:?}", request);
+    tracing::debug!("📥 handle_download_request called: {:?}", request);
     let result = manager.handle_request(&app, request).await;
     if let Err(ref e) = result {
-        eprintln!("❌ handle_download_request error: {}", e);
+        tracing::error!("❌ handle_download_request error: {}", e);
     }
     result
 }
@@ -468,7 +777,11 @@ pub fn pause_download(
     manager: tauri::State<'_, DownloadManager>,
     id: Uuid,
 ) -> bool {
-    manager.pause_instance(&id, &app)
+    let db = match Database::initialize(&app) {
+        Ok(db) => db,
+        Err(_) => return false,
+    };
+    manager.pause_instance(&id, &app, &db)
 }
 
 /// Tauri command for cancelling a download
@@ -478,7 +791,11 @@ pub fn cancel_download(
     manager: tauri::State<'_, DownloadManager>,
     id: Uuid,
 ) -> bool {
-    manager.cancel_instance(&id, &app)
+    let db = match Database::initialize(&app) {
+        Ok(db) => db,
+        Err(_) => return false,
+    };
+    manager.cancel_instance(&id, &app, &db)
 }
 
 /// Tauri command for checking if download is active
@@ -506,21 +823,29 @@ pub async fn request_shutdown(
     app: AppHandle,
     manager: tauri::State<'_, DownloadManager>,
 ) -> Result<(), String> {
-    // 1. Stop all active downloads
-    manager.shutdown_all();
+    // 1. Stop all active downloads gracefully
+    if let Ok(db) = Database::initialize(&app) {
+        manager.shutdown_all_graceful(&app, &db);
+    } else {
+        manager.shutdown_all();
+    }
 
-    // 2. TODO: Save download state to metadata files for resume on next launch
-    // This will be implemented with the .tur.meta file system
-
-    // 3. Exit the application completely (bypasses window close event handler)
+    // 2. Exit the application completely
     app.exit(0);
 
     Ok(())
 }
 
-/// Tauri command for deleting a download from history
+/// Tauri command for deleting a download completely (files + DB record)
 #[tauri::command]
-pub fn delete_download_history(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let db = crate::database::Database::initialize(&app).map_err(|e| e.to_string())?;
-    db.delete_download(&id).map_err(|e| e.to_string())
+pub fn delete_download(
+    app: AppHandle,
+    manager: tauri::State<'_, DownloadManager>,
+    id: Uuid,
+) -> bool {
+    let db = match Database::initialize(&app) {
+        Ok(db) => db,
+        Err(_) => return false,
+    };
+    manager.delete_instance(&id, &app, &db)
 }

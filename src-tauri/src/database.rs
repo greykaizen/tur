@@ -19,6 +19,7 @@ pub struct Download {
     pub destination: String,
     pub accept_ranges: bool,
     pub updated_at: i64,
+    pub queue_id: Option<Uuid>,
 }
 
 impl Download {
@@ -79,7 +80,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS downloads (
                 id             BLOB PRIMARY KEY,
                 filename       TEXT NOT NULL,
-                status         TEXT CHECK (status IN ('completed', 'paused', 'failed')),
+                status         TEXT CHECK (status IN ('completed', 'paused', 'failed', 'cancelled')),
                 size           INTEGER,
                 bytes_received INTEGER NOT NULL DEFAULT 0,
                 url            TEXT NOT NULL,
@@ -272,7 +273,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
-                    content_type, last_modified, destination, accept_ranges, updated_at
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
              FROM downloads ORDER BY updated_at DESC",
         )?;
 
@@ -291,7 +292,24 @@ impl Database {
         Ok(())
     }
 
-    /// Purge all records from database
+    /// Get pending downloads for auto-start (status NULL or 'paused')
+    pub fn get_queued_downloads(&self, limit: usize) -> Result<Vec<Download>> {
+        let conn = self.conn.lock().unwrap();
+        // efficient query for pending items
+        let mut stmt = conn.prepare(
+            "SELECT id, filename, status, size, bytes_received, url, etag, 
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
+             FROM downloads 
+             WHERE status IS NULL OR status = 'paused'
+             ORDER BY updated_at ASC
+             LIMIT ?1",
+        )?;
+
+        let downloads = stmt.query_map([limit], |row| self.row_to_download(row))?;
+        downloads.collect()
+    }
+
+    /// Puritan purge all records from database
     pub fn purge(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM downloads", [])?;
@@ -312,7 +330,7 @@ impl Database {
     ) -> Result<Option<Download>> {
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
-                    content_type, last_modified, destination, accept_ranges, updated_at
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
              FROM downloads WHERE id = ?1",
         )?;
 
@@ -352,7 +370,7 @@ impl Database {
             None => {
                 let mut stmt = conn.prepare(
                     "SELECT id, filename, status, size, bytes_received, url, etag, 
-                            content_type, last_modified, destination, accept_ranges, updated_at
+                            content_type, last_modified, destination, accept_ranges, updated_at, queue_id
                      FROM downloads WHERE status IS NULL ORDER BY updated_at DESC",
                 )?;
                 let downloads = stmt.query_map([], |row| self.row_to_download(row))?;
@@ -389,6 +407,9 @@ impl Database {
             destination: row.get(9)?,
             accept_ranges: row.get::<_, i32>(10)? != 0,
             updated_at: row.get(11)?,
+            queue_id: row
+                .get::<_, Option<Vec<u8>>>(12)?
+                .map(|b| Uuid::from_slice(&b).unwrap()),
         })
     }
 
