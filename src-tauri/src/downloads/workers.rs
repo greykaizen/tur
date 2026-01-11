@@ -1,12 +1,13 @@
 //! Worker tasks and download execution logic
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::constants::RANGE;
@@ -16,11 +17,10 @@ use super::index::Index;
 use crate::downloads::client;
 use crate::settings::config::AppSettings;
 
-/// Minimum bytes to steal from a worker
-const MIN_STEAL_BYTES: usize = 1024 * 1024; // 1 MB
+/// Minimum units to steal from a worker
+const MIN_STEAL_UNITS: usize = 2; // 2 units minimum
 
-/// Start download execution - takes ownership of Download, returns handles
-/// Parameters passed in for minimal memory footprint
+/// Start download execution - returns handles, cancellation token, and indices for tracking
 pub fn run_download<R: tauri::Runtime>(
     download: Download,
     id: Uuid,
@@ -29,20 +29,36 @@ pub fn run_download<R: tauri::Runtime>(
     total_size: usize,
     handle: &tauri::AppHandle<R>,
     config: &AppSettings,
-) -> Vec<JoinHandle<()>> {
+    completion_tx: mpsc::Sender<Uuid>,
+) -> (
+    Vec<JoinHandle<()>>,
+    CancellationToken,
+    Arc<Mutex<Vec<Arc<Index>>>>,
+    Arc<AtomicUsize>,
+) {
     let mut handles = Vec::new();
+    let cancel_token = CancellationToken::new();
+
+    // Initialize indices list from download state (live progress tracking)
+    // For multi-threaded: Coordinator will add to this.
+    // For single-threaded: We'll add one index.
+    let indices = Arc::new(Mutex::new(download.range.clone()));
+
+    // Wrap worker_states in Arc for sharing with progress emitter
+    let worker_states = Arc::new(download.worker_states);
 
     // Pre-allocate file
     if let Err(e) = preallocate_file(&destination, total_size) {
-        eprintln!("Failed to pre-allocate file: {}", e);
+        tracing::error!("Failed to pre-allocate file: {}", e);
     }
 
     // Create shared HTTP client
     let shared_client = match client::create(config) {
         Ok(c) => Arc::new(c),
         Err(e) => {
-            eprintln!("Failed to create HTTP client: {}", e);
-            return handles;
+            tracing::error!("Failed to create HTTP client: {}", e);
+            let bytes = Arc::new(AtomicUsize::new(0));
+            return (handles, cancel_token, indices, bytes);
         }
     };
 
@@ -55,163 +71,216 @@ pub fn run_download<R: tauri::Runtime>(
     let retry_delay_ms = config.network.retry_delay_ms;
     let num_threads = config.download.num_threads;
 
-    // Spawn progress emitter
+    // Spawn progress emitter - pass shared references for live state
     handles.push(spawn_progress_emitter(
+        indices.clone(),
+        worker_states.clone(),
+        total_size,
         id,
         destination.clone(),
-        total_size,
         bytes_downloaded.clone(),
         handle.clone(),
+        cancel_token.clone(),
+        completion_tx,
     ));
 
     // Check mode based on file size
-    if total_size > RANGE[2].end << 23 {
+    if total_size > RANGE[2].end << 20 {
         // Multi-threaded: coordinator owns mutable state directly
+        // Convert Arc<Vec> back to Vec for workers (they each get Arc<AtomicU8>)
+        let worker_states_vec: Vec<Arc<AtomicU8>> = worker_states.iter().cloned().collect();
         handles.extend(run_multi_threaded(
             download.coordinator,
+            indices.clone(),
+            worker_states_vec,
+            id,
             url,
             destination,
-            bytes_downloaded,
+            bytes_downloaded.clone(),
             shared_client,
             num_threads,
             speed_limit,
             retry_count,
             retry_delay_ms,
+            cancel_token.clone(),
+            handle.clone(),
         ));
     } else {
         // Single-threaded: simple streaming
+        // Add a single index for tracking if empty
+        {
+            let mut idx_guard = indices.lock().unwrap();
+            if idx_guard.is_empty() {
+                let total_units = (total_size + (1 << 23) - 1) >> 23;
+                idx_guard.push(Arc::new(Index {
+                    start: AtomicUsize::new(0),
+                    end: AtomicUsize::new(total_units),
+                }));
+            }
+        }
+
+        let worker_states_vec: Vec<Arc<AtomicU8>> = worker_states.iter().cloned().collect();
         handles.push(run_single_threaded(
             url,
             destination,
-            bytes_downloaded,
+            bytes_downloaded.clone(),
             shared_client,
             speed_limit,
             retry_count,
             retry_delay_ms,
+            cancel_token.clone(),
+            indices.clone(),
+            worker_states_vec,
+            handle.clone(),
+            id.to_string(),
         ));
     }
 
-    handles
+    (handles, cancel_token, indices, bytes_downloaded)
 }
 
 /// Production-quality progress emitter with variance-adaptive EWMA
-/// Works correctly for fast fiber, slow mobile, and laggy VPN connections
 fn spawn_progress_emitter<R: tauri::Runtime>(
+    indices: Arc<Mutex<Vec<Arc<Index>>>>,
+    worker_states: Arc<Vec<Arc<AtomicU8>>>,
+    total_size: usize,
     id: Uuid,
     destination: String,
-    total_size: usize,
     bytes_downloaded: Arc<AtomicUsize>,
     handle: tauri::AppHandle<R>,
+    cancel_token: CancellationToken,
+    completion_tx: mpsc::Sender<Uuid>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        use std::time::Instant;
-
-        // Configuration
         const EMIT_INTERVAL_MS: u64 = 250;
-        const WARM_UP_SAMPLES: usize = 3; // Collect samples before showing speed
-        const STALL_HOLD_MS: u64 = 800; // Hold speed during brief stalls
-        const STALL_DECAY: f64 = 0.85; // Decay rate per tick during extended stalls
-
-        // EWMA bounds - variance controls alpha within this range
-        const ALPHA_MIN: f64 = 0.15; // Very smooth when unstable
-        const ALPHA_MAX: f64 = 0.45; // Responsive when stable
+        const SAVE_INTERVAL_S: u64 = 5; // Save every 5 seconds
+        const WARM_UP_SAMPLES: usize = 3;
+        const STALL_HOLD_MS: u64 = 800;
+        const STALL_DECAY: f64 = 0.85;
+        const ALPHA_MIN: f64 = 0.15;
+        const ALPHA_MAX: f64 = 0.45;
 
         let mut interval = tokio::time::interval(Duration::from_millis(EMIT_INTERVAL_MS));
-
-        // State
+        let mut last_save = std::time::Instant::now();
         let mut last_bytes = 0usize;
         let mut smoothed_speed: f64 = 0.0;
-        let mut stall_start: Option<Instant> = None;
-        let mut last_tick = Instant::now();
-
-        // Variance tracking (ring buffer of last N speed samples)
+        let mut stall_start: Option<std::time::Instant> = None;
+        let mut last_tick = std::time::Instant::now();
         let mut speed_history: [f64; 5] = [0.0; 5];
         let mut history_idx = 0usize;
         let mut sample_count = 0usize;
 
         loop {
-            interval.tick().await;
+            // Check cancellation first
+            if cancel_token.is_cancelled() {
+                break;
+            }
+
+            // Select on cancellation and interval ticking
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+
+            // Periodic Save - snapshot live state
+            if last_save.elapsed().as_secs() >= SAVE_INTERVAL_S {
+                let indices_clone = indices.clone();
+                let states_clone = worker_states.clone();
+                let handle_clone = handle.clone();
+                let id_clone = id;
+                let total = total_size;
+
+                let _ = tokio::task::spawn_blocking(move || {
+                    // Build a Download struct from live state for saving
+                    let indices_guard = indices_clone.lock().unwrap();
+                    let range: Vec<Arc<Index>> = indices_guard.clone();
+                    drop(indices_guard);
+
+                    let ws: Vec<Arc<AtomicU8>> = states_clone.iter().cloned().collect();
+
+                    // Create minimal coordinator (we don't have live coordinator state here)
+                    // This is a limitation - coordinator state won't be perfectly accurate
+                    // But indices and worker_states ARE accurate
+                    let max_index = Download::get_index(total >> 23).unwrap_or(0);
+                    let coordinator = Coordinator::from_parts(max_index, max_index, 2, true, total);
+
+                    let download = Download {
+                        coordinator,
+                        range,
+                        worker_states: ws,
+                    };
+
+                    if let Err(e) = download.save(&handle_clone, &id_clone) {
+                        tracing::warn!("Failed to auto-save download state: {}", e);
+                    }
+                })
+                .await;
+
+                last_save = std::time::Instant::now();
+            }
 
             let downloaded = bytes_downloaded.load(Ordering::Relaxed);
-            let now = Instant::now();
+            let now = std::time::Instant::now();
             let byte_delta = downloaded.saturating_sub(last_bytes);
 
-            // Use actual elapsed time since last tick for accurate speed
             let elapsed_secs = last_tick.elapsed().as_secs_f64();
             last_tick = now;
 
             if byte_delta > 0 && elapsed_secs > 0.05 {
-                // We received bytes - calculate speed from this interval
                 let raw_speed = byte_delta as f64 / elapsed_secs;
-
-                // Update history for variance calculation
                 speed_history[history_idx] = raw_speed;
                 history_idx = (history_idx + 1) % speed_history.len();
                 sample_count = (sample_count + 1).min(speed_history.len());
 
-                // Calculate variance-adaptive alpha
                 let alpha = if sample_count >= 2 {
                     let mean: f64 =
                         speed_history[..sample_count].iter().sum::<f64>() / sample_count as f64;
+                    // Simplified variation calc
                     let variance: f64 = speed_history[..sample_count]
                         .iter()
                         .map(|s| (s - mean).powi(2))
                         .sum::<f64>()
                         / sample_count as f64;
-
-                    // Coefficient of variation (normalized variance)
                     let cv = if mean > 0.0 {
                         variance.sqrt() / mean
                     } else {
                         0.0
                     };
-
-                    // High CV (unstable) → low alpha (smooth)
-                    // Low CV (stable) → high alpha (responsive)
-                    let cv_clamped = cv.clamp(0.0, 1.0);
-                    ALPHA_MAX - (cv_clamped * (ALPHA_MAX - ALPHA_MIN))
+                    let cv = cv.clamp(0.0, 1.0);
+                    ALPHA_MAX - (cv * (ALPHA_MAX - ALPHA_MIN))
                 } else {
-                    0.35 // Default alpha during warm-up
+                    0.35
                 };
 
-                // Apply EWMA - no clamping, just smooth transition
                 if sample_count <= 1 {
                     smoothed_speed = raw_speed;
                 } else {
                     smoothed_speed = alpha * raw_speed + (1.0 - alpha) * smoothed_speed;
                 }
 
-                // Reset stall tracking
                 last_bytes = downloaded;
                 stall_start = None;
             } else {
-                // No new bytes - handle stall
                 let stall_duration = stall_start.get_or_insert(now).elapsed().as_millis() as u64;
-
                 if stall_duration > STALL_HOLD_MS {
-                    // Extended stall: decay speed
                     smoothed_speed *= STALL_DECAY;
                     if smoothed_speed < 100.0 {
                         smoothed_speed = 0.0;
                     }
                 }
-                // Brief stall: hold current speed (do nothing)
             }
 
-            // Calculate display values
             let display_speed = if sample_count >= WARM_UP_SAMPLES {
                 smoothed_speed as usize
             } else {
-                0 // Don't show speed until we have enough samples
+                0
             };
-
             let percentage = if total_size > 0 {
                 (downloaded as f64 / total_size as f64) * 100.0
             } else {
                 0.0
             };
 
-            // Emit progress
             let _ = handle.emit(
                 "download_progress",
                 serde_json::json!({
@@ -222,13 +291,17 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
                 }),
             );
 
-            // Check completion
             if downloaded >= total_size && total_size > 0 {
                 if let Ok(db) = crate::database::Database::initialize(&handle) {
                     let _ = db.mark_completed(&id);
                 }
                 let meta_path = Download::meta_path(&handle, &id);
                 let _ = std::fs::remove_file(meta_path);
+
+                // Trigger Check Queue via channel
+                if let Err(e) = completion_tx.send(id).await {
+                    tracing::error!("Failed to signal completion: {}", e);
+                }
 
                 let _ = handle.emit(
                     "download_complete",
@@ -245,8 +318,11 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
 }
 
 /// Multi-threaded download with coordinator owning state directly (no Mutex)
-fn run_multi_threaded(
+fn run_multi_threaded<R: tauri::Runtime>(
     mut coordinator: Coordinator,
+    indices: Arc<Mutex<Vec<Arc<Index>>>>,
+    worker_states: Vec<Arc<std::sync::atomic::AtomicU8>>,
+    id: Uuid,
     url: String,
     destination: String,
     bytes_downloaded: Arc<AtomicUsize>,
@@ -255,72 +331,129 @@ fn run_multi_threaded(
     speed_limit: u64,
     retry_count: u8,
     retry_delay_ms: u32,
+    cancel_token: CancellationToken,
+    handle: tauri::AppHandle<R>,
 ) -> Vec<JoinHandle<()>> {
     // Channel for worker -> coordinator
     type WorkResponse = Option<(Arc<Index>, Range<usize>)>;
     let (tx, mut rx) = mpsc::channel::<oneshot::Sender<WorkResponse>>(num_threads as usize * 2);
 
-    // Coordinator owns range Vec directly - no Arc, no Mutex!
-    let mut range: Vec<Arc<Index>> = Vec::with_capacity(num_threads as usize);
-
     let mut handles = Vec::new();
 
-    // Spawn coordinator task - owns coordinator and range directly
+    // Spawn coordinator task
     handles.push(tokio::spawn(async move {
+        // Access shared indices via lock inside the coordinator loop
         while let Some(reply_tx) = rx.recv().await {
-            let result = coordinator.request_work(&mut range, MIN_STEAL_BYTES);
+            // Lock and pass mutable reference to request_work
+            let mut indices_guard = indices.lock().unwrap();
+            let result = coordinator.request_work(&mut indices_guard, MIN_STEAL_UNITS);
             let _ = reply_tx.send(result);
         }
     }));
 
-    // Per-worker speed limit
     let per_worker_limit = if speed_limit > 0 {
         speed_limit / num_threads as u64
     } else {
         0
     };
 
-    // Spawn worker tasks
-    for _ in 0..num_threads {
+    for (worker_id, _) in (0..num_threads).enumerate() {
         let worker_tx = tx.clone();
         let worker_url = url.clone();
         let worker_dest = destination.clone();
         let worker_bytes = bytes_downloaded.clone();
         let worker_client = client.clone();
+        let worker_token = cancel_token.clone();
+        let worker_state = worker_states[worker_id].clone();
+        let worker_handle = handle.clone();
+        let worker_download_id = id.to_string();
 
         handles.push(tokio::spawn(async move {
+            // Open file handle once per worker for reuse
+            let file_handle = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&worker_dest)
+                .ok();
+
             loop {
+                // Check cancellation
+                if worker_token.is_cancelled() {
+                    break;
+                }
+
                 let (reply_tx, reply_rx) = oneshot::channel();
+
+                // Send work request
                 if worker_tx.send(reply_tx).await.is_err() {
                     break;
                 }
 
                 match reply_rx.await {
-                    Ok(Some((index, byte_range))) => {
-                        let _ = stream_range(
-                            &worker_client,
-                            &worker_url,
-                            &worker_dest,
-                            Some((byte_range, index)),
-                            &worker_bytes,
-                            per_worker_limit,
-                            retry_count,
-                            retry_delay_ms,
-                        )
-                        .await;
+                    Ok(Some((index, _unit_range))) => {
+                        let mut current_unit = index.start.load(Ordering::Relaxed);
+
+                        while current_unit < index.end.load(Ordering::Relaxed) {
+                            if worker_token.is_cancelled() {
+                                break;
+                            }
+
+                            if let Some(ref f) = file_handle {
+                                if let Ok(f_clone) = f.try_clone() {
+                                    use crate::downloads::worker_context::WorkerContext;
+                                    let context = WorkerContext::new(
+                                        worker_id,
+                                        f_clone,
+                                        worker_state.clone(),
+                                        index.clone(),
+                                    );
+
+                                    let success = download_unit(
+                                        &worker_client,
+                                        &worker_url,
+                                        context,
+                                        &worker_bytes,
+                                        per_worker_limit,
+                                        retry_count,
+                                        retry_delay_ms,
+                                        worker_token.clone(),
+                                        worker_handle.clone(),
+                                        worker_download_id.clone(),
+                                    )
+                                    .await;
+
+                                    if !success {
+                                        break;
+                                    }
+
+                                    index.start.fetch_add(1, Ordering::Relaxed);
+                                    current_unit += 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => break,
                 }
-            }
+            } // End Loop
+
+            // Emit worker completion event
+            let _ = worker_handle.emit(
+                "worker_complete",
+                serde_json::json!({
+                    "id": worker_download_id,
+                    "worker_id": worker_id
+                }),
+            );
         }));
     }
-
     handles
 }
 
-/// Single-threaded download
-fn run_single_threaded(
+fn run_single_threaded<R: tauri::Runtime>(
     url: String,
     destination: String,
     bytes_downloaded: Arc<AtomicUsize>,
@@ -328,68 +461,151 @@ fn run_single_threaded(
     speed_limit: u64,
     retry_count: u8,
     retry_delay_ms: u32,
+    cancel_token: CancellationToken,
+    indices: Arc<Mutex<Vec<Arc<Index>>>>,
+    worker_states: Vec<Arc<std::sync::atomic::AtomicU8>>,
+    handle: tauri::AppHandle<R>,
+    id: String,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let _ = stream_range(
-            &client,
-            &url,
-            &destination,
-            None, // Full file, no range
-            &bytes_downloaded,
-            speed_limit,
-            retry_count,
-            retry_delay_ms,
-        )
-        .await;
+        // Calculate total units based on total file size?
+        // We can get it from the index (0..end)
+        let index = {
+            let guard = indices.lock().unwrap();
+            guard.first().cloned()
+        };
+
+        if let Some(idx) = index {
+            let limit = idx.end.load(Ordering::Relaxed);
+            let mut current = idx.start.load(Ordering::Relaxed);
+
+            // Single threaded loop units
+            let file_handle = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&destination)
+                .ok();
+
+            while current < limit {
+                if cancel_token.is_cancelled() {
+                    break;
+                }
+
+                // Use worker 0 state
+                if let Some(ref f) = file_handle {
+                    if let Ok(f_clone) = f.try_clone() {
+                        use crate::downloads::worker_context::WorkerContext;
+                        // Use state 0 if available, else new
+                        let state = if !worker_states.is_empty() {
+                            worker_states[0].clone()
+                        } else {
+                            Arc::new(std::sync::atomic::AtomicU8::new(0))
+                        };
+
+                        let context = WorkerContext::new(0, f_clone, state, idx.clone());
+
+                        let success = download_unit(
+                            &client,
+                            &url,
+                            context,
+                            &bytes_downloaded,
+                            speed_limit,
+                            retry_count,
+                            retry_delay_ms,
+                            cancel_token.clone(),
+                            handle.clone(),
+                            id.clone(),
+                        )
+                        .await;
+
+                        if !success {
+                            break;
+                        }
+
+                        idx.start.fetch_add(1, Ordering::Relaxed);
+                        current += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
     })
 }
 
-/// Common streaming logic - handles both full file and range requests
-async fn stream_range(
+async fn download_unit<R: tauri::Runtime>(
     client: &reqwest::Client,
     url: &str,
-    destination: &str,
-    range_info: Option<(Range<usize>, Arc<Index>)>,
+    context: super::worker_context::WorkerContext, // Takes ownership (one unit lifecycle)
     bytes_counter: &Arc<AtomicUsize>,
     speed_limit: u64,
     retry_count: u8,
     retry_delay_ms: u32,
+    cancel_token: CancellationToken,
+    handle: tauri::AppHandle<R>,
+    download_id: String, // For events
 ) -> bool {
     let mut retries = 0u8;
+    let unit_index = context.index.start.load(Ordering::Relaxed);
+    let start_byte = unit_index << 23;
+    let end_byte = start_byte + (1 << 23) - 1;
+
+    // Resume Logic: Find first unset bit to determine resume position
+    // trailing_ones() gives us the first gap - if bits are 00001011, we resume at bit 2
+    // This is correct because we download sequentially within a unit
+    let state_bits = context.state.load(Ordering::Relaxed);
+    let first_unset_bit = state_bits.trailing_ones() as usize;
+    let resume_offset = first_unset_bit << 20; // MB to Bytes
+
+    // Update context to reflect skipped bytes
+    context
+        .bytes_in_unit
+        .store(resume_offset, Ordering::Relaxed);
+
+    // If fully complete (or somehow overshot), finish immediately
+    if state_bits == 0xFF || resume_offset >= (1 << 23) {
+        context.reset_unit();
+        return true;
+    }
+
+    let actual_start_byte = start_byte + resume_offset;
+    // Safety clamp (though logic above handles it)
+    if actual_start_byte > end_byte {
+        context.reset_unit();
+        return true;
+    }
 
     loop {
-        // Build request
-        let mut req = client.get(url);
-        let start_offset = if let Some((ref range, _)) = range_info {
-            req = req.header(
-                "Range",
-                format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
-            );
-            range.start
-        } else {
-            0
-        };
+        if cancel_token.is_cancelled() {
+            return false;
+        }
 
-        let response = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Request failed: {}", e);
-                if retries < retry_count {
-                    retries += 1;
-                    tokio::time::sleep(Duration::from_millis(exponential_backoff(
-                        retries,
-                        retry_delay_ms,
-                    )))
-                    .await;
-                    continue;
+        let mut req = client.get(url);
+        // Resume from actual_start_byte
+        req = req.header("Range", format!("bytes={}-{}", actual_start_byte, end_byte));
+
+        // Select for cancellation during request
+        let response_future = req.send();
+        let response = tokio::select! {
+            _ = cancel_token.cancelled() => return false,
+            res = response_future => match res {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Request failed: {}", e);
+                    if retries < retry_count {
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_millis(exponential_backoff(retries, retry_delay_ms))).await;
+                        continue;
+                    }
+                    return false;
                 }
-                return false;
             }
         };
 
         let status = response.status();
         if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::PARTIAL_CONTENT {
-            eprintln!("Unexpected status: {}", status);
+            tracing::error!("Unexpected status: {}", status);
             if retries < retry_count {
                 retries += 1;
                 tokio::time::sleep(Duration::from_millis(exponential_backoff(
@@ -402,84 +618,120 @@ async fn stream_range(
             return false;
         }
 
-        // Stream to file
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut offset = start_offset;
+        let mut offset = actual_start_byte; // Resume from actual position
+
         let mut last_throttle = std::time::Instant::now();
         let mut bytes_this_second = 0u64;
 
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(bytes) => {
-                    let bytes_len = bytes.len();
-                    let write_offset = offset as u64;
-                    let bytes_clone = bytes.to_vec();
-                    let dest = destination.to_string();
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => return false,
+                chunk_opt = stream.next() => {
+                    match chunk_opt {
+                        Some(Ok(bytes)) => {
+                            let bytes_len = bytes.len();
+                            let write_offset = offset as u64;
+                            let bytes_clone = bytes.to_vec();
 
-                    let _ = tokio::task::spawn_blocking(move || {
-                        use std::io::{Seek, Write};
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create(true)
-                            .open(&dest)
-                        {
-                            let _ = f.seek(std::io::SeekFrom::Start(write_offset));
-                            let _ = f.write_all(&bytes_clone);
-                        }
-                    })
-                    .await;
+                            // WorkerContext owns the file handle. Clone it for blocking task.
+                            // But File is not cloneable easily without try_clone, and context owns it.
+                            // We construct context by passing File.
+                            // context.file.try_clone().
+                            let file_handle_op = context.file.try_clone().ok();
 
-                    offset += bytes_len;
+                            let _ = tokio::task::spawn_blocking(move || {
+                                use std::io::{Seek, Write};
+                                if let Some(mut f) = file_handle_op {
+                                    if let Err(e) = f.seek(std::io::SeekFrom::Start(write_offset)) {
+                                        tracing::error!("File seek error: {}", e);
+                                    }
+                                    if let Err(e) = f.write_all(&bytes_clone) {
+                                        tracing::error!("File write error: {}", e);
+                                    }
+                                    // fsync every 1MB (when we're about to flip a bit)
+                                    // This ensures data is on disk before we mark it complete
+                                    if (write_offset as usize + bytes_clone.len()) >> 20 > (write_offset as usize) >> 20 {
+                                        if let Err(e) = f.sync_data() {
+                                            tracing::warn!("File sync error: {}", e);
+                                        }
+                                    }
+                                }
+                            }).await;
 
-                    // Update Index if range download
-                    if let Some((_, ref index)) = range_info {
-                        index.start.store(offset, Ordering::Relaxed);
-                    }
+                            offset += bytes_len;
+                            bytes_counter.fetch_add(bytes_len, Ordering::Relaxed);
 
-                    bytes_counter.fetch_add(bytes_len, Ordering::Relaxed);
+                            // 1MB Bit tracking and event emission
+                            let stored = context.bytes_in_unit.fetch_add(bytes_len, Ordering::Relaxed);
+                            let new_total = stored + bytes_len;
+                            let current_mb_index = new_total >> 20;
+                            let prev_mb_index = stored >> 20;
 
-                    // Speed limiting
-                    if speed_limit > 0 {
-                        bytes_this_second += bytes_len as u64;
-                        if bytes_this_second >= speed_limit {
-                            let elapsed = last_throttle.elapsed();
-                            if elapsed < Duration::from_secs(1) {
-                                tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
+                            if current_mb_index > prev_mb_index {
+                                for bit in prev_mb_index..current_mb_index {
+                                    if bit < 8 {
+                                        context.flip_bit(bit as u8);
+                                        // Emit progress event
+                                        let _ = handle.emit("worker_progress", serde_json::json!({
+                                           "download_id": download_id,
+                                           "worker_id": context.worker_id,
+                                           "state_bits": context.state.load(Ordering::Relaxed),
+                                           "current_unit": unit_index,
+                                           "unit_start_offset": start_byte,
+                                           "unit_end_offset": end_byte + 1
+                                        }));
+                                    }
+                                }
                             }
-                            last_throttle = std::time::Instant::now();
-                            bytes_this_second = 0;
+
+                            if speed_limit > 0 {
+                                bytes_this_second += bytes_len as u64;
+                                if bytes_this_second >= speed_limit {
+                                     let elapsed = last_throttle.elapsed();
+                                     if elapsed < Duration::from_secs(1) {
+                                         tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
+                                     }
+                                     last_throttle = std::time::Instant::now();
+                                     bytes_this_second = 0;
+                                }
+                            }
+                        },
+                        Some(Err(e)) => {
+                             tracing::error!("Stream error: {}", e);
+                             break;
+                        },
+                        None => {
+                             // Unit success
+                             // Reset state for next unit
+                             context.state.store(0, Ordering::Relaxed);
+                             context.bytes_in_unit.store(0, Ordering::Relaxed);
+
+                             // Log completion of unit
+                             tracing::debug!(
+                                 "Worker {} completed unit {} (offset {})",
+                                 context.worker_id,
+                                 unit_index,
+                                 start_byte
+                             );
+
+                             return true;
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("Stream error: {}", e);
-                    if retries < retry_count {
-                        retries += 1;
-                        tokio::time::sleep(Duration::from_millis(exponential_backoff(
-                            retries,
-                            retry_delay_ms,
-                        )))
-                        .await;
-                        break;
-                    }
-                    return false;
                 }
             }
         }
 
-        // Check completion
-        if let Some((ref range, ref index)) = range_info {
-            if index.start.load(Ordering::Relaxed) >= range.end {
-                return true;
-            }
-            if retries >= retry_count {
-                return false;
-            }
-            retries += 1;
-        } else {
-            return true; // Single-threaded completed
+        if retries >= retry_count {
+            return false;
         }
+        retries += 1;
+        tokio::time::sleep(Duration::from_millis(exponential_backoff(
+            retries,
+            retry_delay_ms,
+        )))
+        .await;
     }
 }
 
@@ -488,11 +740,8 @@ fn exponential_backoff(retry: u8, base_delay_ms: u32) -> u64 {
 }
 
 fn preallocate_file(path: &str, size: usize) -> std::io::Result<()> {
-    use std::io::Write;
     let file = std::fs::File::create(path)?;
     file.set_len(size as u64)?;
-    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
-    std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-1))?;
-    file.write_all(&[0])?;
+    // No zeroing needed if FS supports sparse files or we trust set_len
     Ok(())
 }
