@@ -16,6 +16,7 @@ import Donate from '@/pages/Donate';
 import Download from '@/pages/Download';
 import { QueueCreationDialog } from '@/components/QueueCreationDialog';
 import { QueueProvider } from '@/contexts/QueueContext';
+import DownloadOptionsWindow from '@/pages/DownloadOptionsWindow';
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -161,6 +162,10 @@ function StandaloneRoutes() {
   // Check if this is a download window (no Layout needed)
   if (location.pathname === '/download') {
     return <Download />;
+  }
+
+  if (location.pathname === '/download-options') {
+    return <DownloadOptionsWindow />;
   }
 
   return <AppContent />;

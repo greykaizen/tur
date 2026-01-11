@@ -1,11 +1,10 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useQueues } from "@/contexts/QueueContext";
 import { useDownloads } from "@/hooks/useDownloads";
-import { X, GripVertical } from "lucide-react";
+import { X, GripVertical, Trash2 } from "lucide-react";
 
 interface DownloadOptionsDialogProps {
     open: boolean;
@@ -24,11 +23,13 @@ export function DownloadOptionsDialog({ open, onOpenChange, urls: initialUrls, o
     const [urls, setUrls] = useState<string[]>(initialUrls);
     const [dragIndex, setDragIndex] = useState<number | null>(null);
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const [isRemoveZoneActive, setIsRemoveZoneActive] = useState(false);
 
     // Sync with prop changes
-    useState(() => {
+    // Sync with prop changes
+    useEffect(() => {
         setUrls(initialUrls);
-    });
+    }, [initialUrls]);
 
     // Mode selection
     const [mode, setMode] = useState<DownloadMode>('start_all');
@@ -59,17 +60,22 @@ export function DownloadOptionsDialog({ open, onOpenChange, urls: initialUrls, o
         setUrls(prev => prev.filter((_, i) => i !== index));
     };
 
-    const handleDragStart = (index: number) => {
+    const handleDragStart = (e: React.DragEvent, index: number) => {
         setDragIndex(index);
+        // Set drag image or data if needed
+        e.dataTransfer.effectAllowed = "move";
     };
 
     const handleDragOver = (e: React.DragEvent, index: number) => {
         e.preventDefault();
+        e.stopPropagation();
         setDragOverIndex(index);
+        setIsRemoveZoneActive(false);
     };
 
-    const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    const handleListDrop = (e: React.DragEvent, dropIndex: number) => {
         e.preventDefault();
+        e.stopPropagation();
         if (dragIndex === null) return;
 
         const newUrls = [...urls];
@@ -80,9 +86,34 @@ export function DownloadOptionsDialog({ open, onOpenChange, urls: initialUrls, o
         setDragOverIndex(null);
     };
 
+    const handleRemoveZoneDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (dragIndex !== null) {
+            setIsRemoveZoneActive(true);
+            setDragOverIndex(null);
+        }
+    };
+
+    const handleRemoveZoneLeave = (e: React.DragEvent) => {
+        // Only if leaving the dialog content itself
+        if (e.target === e.currentTarget) {
+            setIsRemoveZoneActive(false);
+        }
+    };
+
+    const handleRemoveDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (dragIndex !== null) {
+            removeUrl(dragIndex);
+            setDragIndex(null);
+            setIsRemoveZoneActive(false);
+        }
+    };
+
     const handleDragEnd = () => {
         setDragIndex(null);
         setDragOverIndex(null);
+        setIsRemoveZoneActive(false);
     };
 
     const handleStart = async () => {
@@ -104,186 +135,224 @@ export function DownloadOptionsDialog({ open, onOpenChange, urls: initialUrls, o
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[540px] max-h-[85vh] flex flex-col">
-                <DialogHeader className="pb-2">
-                    <DialogTitle className="text-base">How would you like to download?</DialogTitle>
+            <DialogContent
+                className={`sm:max-w-[540px] max-h-[85vh] flex flex-col p-0 gap-0 overflow-hidden transition-colors ${isRemoveZoneActive ? 'bg-destructive/5' : ''
+                    }`}
+                onDragOver={handleRemoveZoneDragOver}
+                onDragLeave={handleRemoveZoneLeave}
+                onDrop={handleRemoveDrop}
+            >
+                {/* Header - "Proper Window" look */}
+                <DialogHeader className="px-6 py-4 border-b bg-muted/30">
+                    <DialogTitle className="text-base font-semibold flex items-center justify-between">
+                        <span>How would you like to download?</span>
+                        {isRemoveZoneActive && (
+                            <span className="text-destructive text-xs flex items-center gap-1 animate-pulse">
+                                <Trash2 className="h-3 w-3" />
+                                Drop to remove
+                            </span>
+                        )}
+                    </DialogTitle>
                 </DialogHeader>
 
-                <div className="flex-1 overflow-hidden flex flex-col gap-3">
+                <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
                     {/* URL List - Draggable */}
-                    <div className="bg-muted/40 rounded-lg border overflow-hidden">
-                        <div className="px-3 py-1.5 bg-muted/60 border-b flex justify-between items-center">
-                            <span className="text-xs font-medium text-muted-foreground">
-                                {urls.length} link{urls.length !== 1 ? 's' : ''}
+                    <div className="space-y-2">
+                        <div className="flex justify-between items-center px-1">
+                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                                {urls.length} link{urls.length !== 1 ? 's' : ''} detected
+                            </span>
+                            <span className="text-[10px] text-muted-foreground/60 italic">
+                                Drag out to remove
                             </span>
                         </div>
-                        <div className="max-h-[140px] overflow-y-auto">
-                            {urls.map((url, index) => (
-                                <div
-                                    key={index}
-                                    draggable
-                                    onDragStart={() => handleDragStart(index)}
-                                    onDragOver={(e) => handleDragOver(e, index)}
-                                    onDrop={(e) => handleDrop(e, index)}
-                                    onDragEnd={handleDragEnd}
-                                    className={`group flex items-center gap-2 px-2 py-1.5 text-xs border-b border-border/30 last:border-0 cursor-move transition-colors hover:bg-muted/50 ${dragOverIndex === index ? 'bg-primary/10' : ''
-                                        } ${dragIndex === index ? 'opacity-50' : ''}`}
-                                >
-                                    <GripVertical className="h-3 w-3 text-muted-foreground/50 shrink-0" />
-                                    <span className="flex-1 truncate font-mono text-muted-foreground">{url}</span>
-                                    <button
-                                        onClick={() => removeUrl(index)}
-                                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-destructive/20 rounded transition-all"
-                                        title="Remove"
+
+                        <div className="bg-background rounded-lg border shadow-sm divide-y" onDrop={(e) => e.stopPropagation()}>
+                            <div className="max-h-[160px] overflow-y-auto">
+                                {urls.map((url, index) => (
+                                    <div
+                                        key={index}
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, index)}
+                                        onDragOver={(e) => handleDragOver(e, index)}
+                                        onDrop={(e) => handleListDrop(e, index)}
+                                        onDragEnd={handleDragEnd}
+                                        className={`group flex items-center gap-3 px-3 py-2.5 text-sm cursor-move transition-all hover:bg-muted/30 ${dragOverIndex === index ? 'bg-primary/5 border-primary/20 relative z-10' : ''
+                                            } ${dragIndex === index ? 'opacity-40 grayscale' : ''}`}
                                     >
-                                        <X className="h-3 w-3 text-destructive" />
-                                    </button>
-                                </div>
-                            ))}
+                                        <GripVertical className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <div className="truncate font-mono text-xs">{url}</div>
+                                        </div>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation(); // prevent drag start if clicking remove
+                                                removeUrl(index);
+                                            }}
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 hover:text-destructive rounded-md transition-all shrink-0"
+                                            title="Remove"
+                                        >
+                                            <X className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                ))}
+                                {urls.length === 0 && (
+                                    <div className="py-8 text-center text-muted-foreground text-xs">
+                                        No URLs remaining
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
-                    {/* Mode Selection - Compact */}
-                    <div className="space-y-2">
-                        {/* Start All */}
-                        <label className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${mode === 'start_all' ? 'border-primary bg-primary/5' : 'hover:bg-muted/40'
-                            }`}>
-                            <input
-                                type="radio"
-                                name="mode"
-                                checked={mode === 'start_all'}
-                                onChange={() => setMode('start_all')}
-                                className="shrink-0"
-                            />
-                            <div className="flex-1 min-w-0">
-                                <div className="text-sm font-medium">Start all now</div>
-                                <div className="text-xs text-muted-foreground">Download all files immediately</div>
-                            </div>
-                        </label>
+                    {/* Mode Selection */}
+                    <div className="space-y-3">
+                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-1">
+                            Download Mode
+                        </span>
 
-                        {/* Queue */}
-                        <div className={`rounded-lg border transition-all ${mode === 'queue' ? 'border-primary bg-primary/5' : ''
-                            }`}>
-                            <label className={`flex items-center gap-3 p-2.5 cursor-pointer ${mode !== 'queue' ? 'hover:bg-muted/40 rounded-lg' : ''
+                        <div className="grid gap-3">
+                            {/* Start All */}
+                            <label className={`flex items-start gap-4 p-4 rounded-xl border transition-all cursor-pointer ${mode === 'start_all'
+                                ? 'border-primary ring-1 ring-primary bg-primary/5 shadow-sm'
+                                : 'hover:bg-muted/40 hover:border-muted-foreground/30'
                                 }`}>
                                 <input
                                     type="radio"
                                     name="mode"
-                                    checked={mode === 'queue'}
-                                    onChange={() => setMode('queue')}
-                                    className="shrink-0"
+                                    checked={mode === 'start_all'}
+                                    onChange={() => setMode('start_all')}
+                                    className="mt-1"
                                 />
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-sm font-medium">Queue downloads</div>
-                                    <div className="text-xs text-muted-foreground">Controlled execution order</div>
+                                <div>
+                                    <div className="font-medium text-sm">Start all now</div>
+                                    <div className="text-xs text-muted-foreground mt-0.5">Download files immediately in parallel</div>
                                 </div>
                             </label>
 
-                            {mode === 'queue' && (
-                                <div className="px-3 pb-3 pt-1 space-y-2 border-t border-border/50 ml-6">
-                                    {/* Queue Mode */}
-                                    <div className="flex items-center gap-3 text-xs">
-                                        <label className="flex items-center gap-1.5 cursor-pointer">
-                                            <input
-                                                type="radio"
-                                                name="queueMode"
-                                                checked={queueMode === 'sequential'}
-                                                onChange={() => setQueueMode('sequential')}
-                                            />
-                                            <span>One by one</span>
-                                        </label>
-                                        <label className="flex items-center gap-1.5 cursor-pointer">
-                                            <input
-                                                type="radio"
-                                                name="queueMode"
-                                                checked={queueMode === 'concurrent'}
-                                                onChange={() => setQueueMode('concurrent')}
-                                            />
-                                            <span>Keep</span>
-                                            <Input
-                                                type="number"
-                                                min={1}
-                                                max={10}
-                                                value={parallelCount}
-                                                onChange={(e) => setParallelCount(parseInt(e.target.value) || 2)}
-                                                className="w-12 h-6 text-xs px-2"
-                                                onClick={(e) => e.stopPropagation()}
-                                            />
-                                            <span>active</span>
-                                        </label>
-                                    </div>
-                                    {/* Queue Name */}
-                                    <div className="flex items-center gap-2">
-                                        <Input
-                                            value={queueName}
-                                            onChange={(e) => setQueueName(e.target.value)}
-                                            placeholder={`Queue ${queues.length + 1}`}
-                                            className="h-7 text-xs flex-1"
-                                        />
-                                        <div
-                                            className="w-5 h-5 rounded-full shrink-0 ring-1 ring-border"
-                                            style={{ backgroundColor: nextColor }}
-                                        />
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Wait For - Only show if active */}
-                        {(activeDownloads.length > 0 || activeQueues.length > 0) && (
-                            <div className={`rounded-lg border transition-all ${mode === 'wait' ? 'border-primary bg-primary/5' : ''
+                            {/* Queue */}
+                            <div className={`rounded-xl border transition-all overflow-hidden ${mode === 'queue' ? 'border-primary ring-1 ring-primary bg-primary/5 shadow-sm' : ''
                                 }`}>
-                                <label className={`flex items-center gap-3 p-2.5 cursor-pointer ${mode !== 'wait' ? 'hover:bg-muted/40 rounded-lg' : ''
+                                <label className={`flex items-start gap-4 p-4 cursor-pointer ${mode !== 'queue' ? 'hover:bg-muted/40 hover:border-muted-foreground/30' : ''
                                     }`}>
                                     <input
                                         type="radio"
                                         name="mode"
-                                        checked={mode === 'wait'}
-                                        onChange={() => setMode('wait')}
-                                        className="shrink-0"
+                                        checked={mode === 'queue'}
+                                        onChange={() => setMode('queue')}
+                                        className="mt-1"
                                     />
-                                    <div className="flex-1 min-w-0">
-                                        <div className="text-sm font-medium">Wait for...</div>
-                                        <div className="text-xs text-muted-foreground">Start after another completes</div>
+                                    <div className="flex-1">
+                                        <div className="font-medium text-sm">Queue downloads</div>
+                                        <div className="text-xs text-muted-foreground mt-0.5">Create a managed queue</div>
                                     </div>
                                 </label>
 
-                                {mode === 'wait' && (
-                                    <div className="px-3 pb-3 pt-1 space-y-1 border-t border-border/50 ml-6 max-h-[80px] overflow-y-auto">
-                                        {activeDownloads.slice(0, 5).map(dl => (
-                                            <label key={dl.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+                                {mode === 'queue' && (
+                                    <div className="bg-background/50 border-t px-4 py-3 space-y-3 animate-in slide-in-from-top-2 duration-200">
+                                        <div className="flex flex-wrap gap-4">
+                                            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
                                                 <input
                                                     type="radio"
-                                                    name="waitFor"
-                                                    checked={waitForId === dl.id}
-                                                    onChange={() => setWaitForId(dl.id)}
+                                                    name="queueMode"
+                                                    checked={queueMode === 'sequential'}
+                                                    onChange={() => setQueueMode('sequential')}
+                                                    className="accent-primary"
                                                 />
-                                                <span className="truncate flex-1">{dl.filename}</span>
-                                                <span className="text-muted-foreground">{Math.round(dl.progress)}%</span>
+                                                <span>One by one</span>
                                             </label>
-                                        ))}
-                                        {activeQueues.map(q => (
-                                            <label key={q.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+                                            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
                                                 <input
                                                     type="radio"
-                                                    name="waitFor"
-                                                    checked={waitForId === q.id}
-                                                    onChange={() => setWaitForId(q.id)}
+                                                    name="queueMode"
+                                                    checked={queueMode === 'concurrent'}
+                                                    onChange={() => setQueueMode('concurrent')}
+                                                    className="accent-primary"
                                                 />
-                                                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: q.color || '#3b82f6' }} />
-                                                <span className="truncate flex-1">{q.name}</span>
+                                                <span className="flex items-center gap-2">
+                                                    Keep
+                                                    <Input
+                                                        type="number"
+                                                        min={1}
+                                                        max={10}
+                                                        value={parallelCount}
+                                                        onChange={(e) => setParallelCount(parseInt(e.target.value) || 2)}
+                                                        className="w-14 h-7 text-xs px-2 bg-background"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                    />
+                                                    active
+                                                </span>
                                             </label>
-                                        ))}
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <Input
+                                                value={queueName}
+                                                onChange={(e) => setQueueName(e.target.value)}
+                                                placeholder={`Queue ${queues.length + 1}`}
+                                                className="h-8 text-sm bg-background"
+                                            />
+                                            <div
+                                                className="w-6 h-6 rounded-full shrink-0 ring-1 ring-border shadow-sm"
+                                                style={{ backgroundColor: nextColor }}
+                                                title="Queue Color"
+                                            />
+                                        </div>
                                     </div>
                                 )}
                             </div>
-                        )}
+
+                            {/* Wait For */}
+                            {(activeDownloads.length > 0 || activeQueues.length > 0) && (
+                                <div className={`rounded-xl border transition-all overflow-hidden ${mode === 'wait' ? 'border-primary ring-1 ring-primary bg-primary/5 shadow-sm' : ''
+                                    }`}>
+                                    <label className={`flex items-start gap-4 p-4 cursor-pointer ${mode !== 'wait' ? 'hover:bg-muted/40 hover:border-muted-foreground/30' : ''
+                                        }`}>
+                                        <input
+                                            type="radio"
+                                            name="mode"
+                                            checked={mode === 'wait'}
+                                            onChange={() => setMode('wait')}
+                                            className="mt-1"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="font-medium text-sm">Wait for...</div>
+                                            <div className="text-xs text-muted-foreground mt-0.5">Start after completion</div>
+                                        </div>
+                                    </label>
+
+                                    {mode === 'wait' && (
+                                        <div className="bg-background/50 border-t max-h-[120px] overflow-y-auto divide-y animate-in slide-in-from-top-2 duration-200">
+                                            {[...activeDownloads, ...activeQueues].map((item: any) => (
+                                                <label key={item.id} className="flex items-center gap-3 px-4 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors">
+                                                    <input
+                                                        type="radio"
+                                                        name="waitFor"
+                                                        checked={waitForId === item.id}
+                                                        onChange={() => setWaitForId(item.id)}
+                                                        className="accent-primary"
+                                                    />
+                                                    <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
+                                                        <span className="truncate">{item.filename || item.name}</span>
+                                                        {item.progress !== undefined && (
+                                                            <span className="text-xs text-muted-foreground">{Math.round(item.progress)}%</span>
+                                                        )}
+                                                        {item.color && (
+                                                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
+                                                        )}
+                                                    </div>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
 
-                <DialogFooter className="pt-3 border-t gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-                    <Button size="sm" onClick={handleStart} disabled={urls.length === 0}>
+                <DialogFooter className="px-6 py-4 border-t bg-muted/30 flex justify-between sm:justify-between items-center">
+                    <Button variant="ghost" onClick={() => onOpenChange(false)} className="hover:bg-background">Cancel</Button>
+                    <Button onClick={handleStart} disabled={urls.length === 0} className="px-8 shadow-sm">
                         {mode === 'start_all' ? 'Start All' : mode === 'queue' ? 'Create Queue' : 'Wait & Queue'}
                     </Button>
                 </DialogFooter>

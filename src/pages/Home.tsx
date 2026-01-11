@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useLocation } from 'react-router-dom';
 import PageTransition from '@/components/PageTransition';
 import { CompletionDialog } from '@/components/CompletionDialog';
@@ -7,7 +8,9 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useDownloadSelection } from '@/contexts/DownloadSelectionContext';
 import { useDownloads, formatSize, formatSpeed, formatTimeLeft } from '@/hooks/useDownloads';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DownloadOptionsDialog } from "@/components/DownloadOptionsDialog";
+// import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+// import { emit } from '@tauri-apps/api/event';
+// import { DownloadOptionsDialog } from "@/components/DownloadOptionsDialog";
 
 import {
   DropdownMenu,
@@ -39,7 +42,7 @@ export default function Home() {
   const [inputValue, setInputValue] = useState('');
   const [isDragging, setIsDragging] = useState(false);
 
-  const [showOptionsDialog, setShowOptionsDialog] = useState(false);
+  // const [showOptionsDialog, setShowOptionsDialog] = useState(false); // Removed
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -50,7 +53,7 @@ export default function Home() {
   const showSegmentProgress = ready ? settings.app.show_segment_progress : true;
 
   // Get downloads for actions (startDownloads, pauseDownload, cancelDownload, resumeDownloads)
-  const { downloads, startDownloads, pauseDownload, cancelDownload, resumeDownloads } = useDownloads();
+  const { downloads, pauseDownload, cancelDownload, resumeDownloads } = useDownloads();
 
   // Completion timer state
   const [completionTimer, setCompletionTimer] = useState<number | null>(null);
@@ -220,25 +223,26 @@ export default function Home() {
   };
 
   const handleDownload = async () => {
-    setShowOptionsDialog(true);
-  };
-
-  const handleConfirmDownload = async (queueId: string | null, _mode?: 'sequential' | 'concurrent', _parallelCount?: number) => {
     const allUrls = [...urlTags];
     if (inputValue.trim()) {
       allUrls.push(inputValue.trim());
     }
 
+    // Only open if we have URLs
     if (allUrls.length === 0) return;
 
-    await startDownloads(allUrls.map(url => ({
-      url,
-      queue_id: queueId
-    })));
+    try {
+      await invoke('open_download_options_window', { urls: allUrls });
 
-    setUrlTags([]);
-    setInputValue('');
+      // Clear input from Home immediately
+      setUrlTags([]);
+      setInputValue('');
+    } catch (error) {
+      console.error("Failed to open download options window", error);
+    }
   };
+
+  // handleConfirmDownload removed
 
   // Empty State - No download selected
   if (!selectedDownload) {
@@ -342,12 +346,7 @@ export default function Home() {
               className="hidden"
             />
           </div>
-          <DownloadOptionsDialog
-            open={showOptionsDialog}
-            onOpenChange={setShowOptionsDialog}
-            urls={[...urlTags, inputValue.trim()].filter(Boolean)}
-            onStart={handleConfirmDownload}
-          />
+          {/* Dialog Removed */}
         </PageTransition>
       );
     }
