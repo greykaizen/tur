@@ -33,6 +33,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+proptest-regressions
+
+backend.md
+backlog.md
+
 node_modules
 dist
 dist-ssr
@@ -49,3 +54,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+backlog.md
