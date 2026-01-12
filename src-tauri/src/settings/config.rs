@@ -12,6 +12,30 @@ pub struct AppSettings {
     pub show_notifications: bool,
     pub notification_sound: bool,
     pub dependencies: DependencyConfig,
+    pub scheduler: SchedulerConfig,
+}
+
+/// Scheduler configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    /// Behavior when a schedule is missed: "start_immediately" or "ask_user"
+    pub missed_schedule_action: String,
+    /// Bandwidth windows
+    pub bandwidth_windows: Vec<BandwidthWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BandwidthWindow {
+    /// Start time in HH:MM format (24-hour)
+    pub start_time: String,
+    /// End time in HH:MM format (24-hour)
+    pub end_time: String,
+    /// Speed limit in bytes/sec (0 = unlimited)
+    pub speed_limit: u64,
+    /// Optional name for the window
+    pub name: Option<String>,
+    /// Whether this window is enabled
+    pub enabled: bool,
 }
 
 /// General application configuration
@@ -140,6 +164,16 @@ impl Default for AppSettings {
             show_notifications: true,
             notification_sound: true,
             dependencies: DependencyConfig::default(),
+            scheduler: SchedulerConfig::default(),
+        }
+    }
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            missed_schedule_action: "start_immediately".into(),
+            bandwidth_windows: Vec::new(),
         }
     }
 }

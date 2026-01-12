@@ -150,6 +150,31 @@ pub enum ManagerCommand {
         download_id: Uuid,
         reply_tx: oneshot::Sender<Result<(), String>>,
     },
+    // Scheduling Commands
+    SetSchedule {
+        download_id: Uuid,
+        scheduled_at: chrono::DateTime<chrono::Utc>,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    ClearSchedule {
+        download_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    StartNow {
+        download_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    SetQueueDependency {
+        queue_id: Uuid,
+        depends_on: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    ClearQueueDependency {
+        queue_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    EvaluateSchedules,
+    ApplyBandwidthLimit,
 }
 
 #[derive(Debug)]
@@ -425,6 +450,82 @@ impl ManagerHandle {
             .map_err(|e| e.to_string())?;
         reply_rx.await.map_err(|e| e.to_string())?
     }
+
+    // Scheduling Methods
+    pub async fn set_schedule(
+        &self,
+        download_id: Uuid,
+        scheduled_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::SetSchedule {
+                download_id,
+                scheduled_at,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn clear_schedule(&self, download_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::ClearSchedule {
+                download_id,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn start_now(&self, download_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::StartNow {
+                download_id,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn set_queue_dependency(
+        &self,
+        queue_id: Uuid,
+        depends_on: Uuid,
+    ) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::SetQueueDependency {
+                queue_id,
+                depends_on,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn clear_queue_dependency(&self, queue_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::ClearQueueDependency { queue_id, reply_tx })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub fn apply_bandwidth_limit(&self) {
+        let _ = self.tx.try_send(ManagerCommand::ApplyBandwidthLimit);
+    }
+
+    pub fn trigger_schedule_evaluation(&self) {
+        let _ = self.tx.try_send(ManagerCommand::EvaluateSchedules);
+    }
 }
 
 struct ManagerActor {
@@ -432,6 +533,7 @@ struct ManagerActor {
     cmd_rx: mpsc::Receiver<ManagerCommand>,
     app: AppHandle,
     self_handle: ManagerHandle,
+    boundary_timer_handle: Option<JoinHandle<()>>,
 }
 
 impl ManagerActor {
@@ -514,6 +616,90 @@ impl ManagerActor {
                     reply_tx,
                 } => {
                     let _ = reply_tx.send(self.handle_remove_from_queue(download_id).await);
+                }
+
+                // Scheduling Commands
+                ManagerCommand::SetSchedule {
+                    download_id,
+                    scheduled_at,
+                    reply_tx,
+                } => {
+                    let db = Database::initialize(&self.app).map_err(|e| e.to_string());
+                    match db {
+                        Ok(db) => {
+                            let res = db
+                                .set_download_schedule(&download_id, &scheduled_at)
+                                .map_err(|e| e.to_string());
+                            if res.is_ok() {
+                                // Trigger evaluation
+                                self.evaluate_schedules().await.ok();
+                            }
+                            let _ = reply_tx.send(res);
+                        }
+                        Err(e) => {
+                            let _ = reply_tx.send(Err(e));
+                        }
+                    }
+                }
+                ManagerCommand::ClearSchedule {
+                    download_id,
+                    reply_tx,
+                } => {
+                    let db = Database::initialize(&self.app).map_err(|e| e.to_string());
+                    match db {
+                        Ok(db) => {
+                            let res = db
+                                .clear_download_schedule(&download_id)
+                                .map_err(|e| e.to_string());
+                            if res.is_ok() {
+                                self.evaluate_schedules().await.ok();
+                            }
+                            let _ = reply_tx.send(res);
+                        }
+                        Err(e) => {
+                            let _ = reply_tx.send(Err(e));
+                        }
+                    }
+                }
+                ManagerCommand::StartNow {
+                    download_id,
+                    reply_tx,
+                } => {
+                    let _ = reply_tx.send(self.handle_start_now(download_id).await);
+                }
+                ManagerCommand::SetQueueDependency {
+                    queue_id,
+                    depends_on,
+                    reply_tx,
+                } => {
+                    let _ =
+                        reply_tx.send(self.handle_set_queue_dependency(queue_id, depends_on).await);
+                }
+                ManagerCommand::ClearQueueDependency { queue_id, reply_tx } => {
+                    let db = Database::initialize(&self.app).map_err(|e| e.to_string());
+                    match db {
+                        Ok(db) => {
+                            let res = db
+                                .clear_queue_dependency(&queue_id)
+                                .map_err(|e| e.to_string());
+                            if res.is_ok() {
+                                self.reconcile_queue(&queue_id).await.ok();
+                            }
+                            let _ = reply_tx.send(res);
+                        }
+                        Err(e) => {
+                            let _ = reply_tx.send(Err(e));
+                        }
+                    }
+                }
+                ManagerCommand::EvaluateSchedules => {
+                    if let Err(e) = self.evaluate_schedules().await {
+                        tracing::error!("Error evaluating schedules: {}", e);
+                    }
+                }
+                ManagerCommand::ApplyBandwidthLimit => {
+                    let settings = settings::load_or_create(&self.app);
+                    self.apply_bandwidth_limit(&settings).await;
                 }
             }
         }
@@ -615,6 +801,273 @@ impl ManagerActor {
     ) -> Result<(), String> {
         self.handle_resume_downloads(db, client, settings, vec![download_id])
             .await
+    }
+
+    // --- Scheduling System Logic ---
+
+    async fn evaluate_schedules(&mut self) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+        let settings = settings::load_or_create(&self.app);
+
+        // 1. Check download schedules
+        let scheduled_downloads = db.get_scheduled_downloads().map_err(|e| e.to_string())?;
+
+        for download in scheduled_downloads {
+            if let Some(scheduled_at) = download.scheduled_at {
+                if scheduled_at <= now {
+                    // Schedule time reached or passed
+                    if download.status.as_deref() == Some("scheduled") {
+                        // Check if this is a missed schedule (app was closed)
+                        // If it's more than 1 minute past, it's missed
+                        let is_missed = scheduled_at < now - chrono::Duration::minutes(1);
+
+                        if is_missed && settings.scheduler.missed_schedule_action == "ask_user" {
+                            // Emit event for UI to handle
+                            let _ = self.app.emit(
+                                "missed_schedule",
+                                json!({
+                                    "download_id": download.id.to_string(),
+                                    "scheduled_at": scheduled_at.to_rfc3339(),
+                                    "filename": download.filename,
+                                }),
+                            );
+                        } else {
+                            // Start immediately
+                            self.start_scheduled_download(&db, download.id).await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check queue dependencies
+        let queues_with_deps = db
+            .get_queues_with_dependencies()
+            .map_err(|e| e.to_string())?;
+
+        for queue in queues_with_deps {
+            if let Some(depends_on) = queue.depends_on {
+                // Check if dependency is complete
+                let dep_queue = db.get_queue_by_id(&depends_on).map_err(|e| e.to_string())?;
+
+                match dep_queue {
+                    None => {
+                        // Dependency queue was deleted, clear dependency and start
+                        db.clear_queue_dependency(&queue.id)
+                            .map_err(|e| e.to_string())?;
+                        self.reconcile_queue(&queue.id).await?;
+                    }
+                    Some(dep) => {
+                        if dep.status == "completed" {
+                            // Dependency complete, clear and start
+                            db.clear_queue_dependency(&queue.id)
+                                .map_err(|e| e.to_string())?;
+                            self.reconcile_queue(&queue.id).await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Apply current bandwidth window
+        self.apply_bandwidth_limit(&settings).await;
+
+        // 4. Set next boundary timer
+        self.set_next_boundary_timer(&db, &settings).await;
+
+        Ok(())
+    }
+
+    async fn start_scheduled_download(
+        &mut self,
+        db: &Database,
+        download_id: Uuid,
+    ) -> Result<(), String> {
+        // Clear the schedule
+        db.clear_download_schedule(&download_id)
+            .map_err(|e| e.to_string())?;
+
+        // Update status from "scheduled" to "queued"
+        db.update_download_status(&download_id, "queued")
+            .map_err(|e| e.to_string())?;
+
+        // Check if download is in a queue
+        let download = db
+            .get_download_by_id(&download_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Download not found")?;
+
+        if let Some(queue_id) = download.queue_id {
+            // Let queue reconciliation handle it
+            self.reconcile_queue(&queue_id).await?;
+        } else {
+            // Start directly
+            let settings = settings::load_or_create(&self.app);
+            let client = client::create(&settings)?;
+            self.handle_resume_downloads(db, &client, &settings, vec![download_id])
+                .await?;
+        }
+
+        let _ = self.app.emit(
+            "schedule_triggered",
+            json!({
+                "download_id": download_id.to_string(),
+            }),
+        );
+
+        Ok(())
+    }
+
+    async fn set_next_boundary_timer(&mut self, db: &Database, settings: &AppSettings) {
+        // Cancel existing timer
+        if let Some(handle) = self.boundary_timer_handle.take() {
+            handle.abort();
+        }
+
+        let now = chrono::Utc::now();
+        let mut next_boundary: Option<chrono::DateTime<chrono::Utc>> = None;
+
+        // 1. Find next scheduled download time
+        if let Ok(scheduled) = db.get_scheduled_downloads() {
+            for download in scheduled {
+                if let Some(scheduled_at) = download.scheduled_at {
+                    if scheduled_at > now {
+                        next_boundary = Some(match next_boundary {
+                            None => scheduled_at,
+                            Some(existing) => existing.min(scheduled_at),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Find next bandwidth window boundary
+        for window in &settings.scheduler.bandwidth_windows {
+            if !window.enabled {
+                continue;
+            }
+
+            let today = now.date_naive();
+
+            // Parse window times (HH:MM format)
+            if let (Ok(start), Ok(end)) = (
+                chrono::NaiveTime::parse_from_str(&window.start_time, "%H:%M"),
+                chrono::NaiveTime::parse_from_str(&window.end_time, "%H:%M"),
+            ) {
+                let start_dt = today.and_time(start).and_utc();
+                let end_dt = today.and_time(end).and_utc();
+
+                // Check if boundaries are in the future
+                for boundary in [start_dt, end_dt] {
+                    if boundary > now {
+                        next_boundary = Some(match next_boundary {
+                            None => boundary,
+                            Some(existing) => existing.min(boundary),
+                        });
+                    }
+                }
+
+                // Also check tomorrow's start
+                let tomorrow_start = (today + chrono::Duration::days(1))
+                    .and_time(start)
+                    .and_utc();
+                next_boundary = Some(match next_boundary {
+                    None => tomorrow_start,
+                    Some(existing) => existing.min(tomorrow_start),
+                });
+            }
+        }
+
+        // Set timer if we have a next boundary
+        if let Some(boundary) = next_boundary {
+            let duration = (boundary - now)
+                .to_std()
+                .unwrap_or(std::time::Duration::from_secs(60));
+            let tx = self.self_handle.tx.clone();
+
+            // Log for debug
+            tracing::debug!("Next schedule boundary in {:?}", duration);
+
+            self.boundary_timer_handle = Some(tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                let _ = tx.try_send(ManagerCommand::EvaluateSchedules);
+            }));
+        }
+    }
+
+    async fn apply_bandwidth_limit(&mut self, settings: &AppSettings) {
+        let now = chrono::Utc::now();
+        let current_time = now.time();
+
+        let mut effective_limit = settings.download.speed_limit; // Global default
+
+        for window in &settings.scheduler.bandwidth_windows {
+            if !window.enabled {
+                continue;
+            }
+
+            if let (Ok(start), Ok(end)) = (
+                chrono::NaiveTime::parse_from_str(&window.start_time, "%H:%M"),
+                chrono::NaiveTime::parse_from_str(&window.end_time, "%H:%M"),
+            ) {
+                let in_window = if start <= end {
+                    // Normal window (e.g., 09:00 - 17:00)
+                    current_time >= start && current_time < end
+                } else {
+                    // Overnight window (e.g., 22:00 - 06:00)
+                    current_time >= start || current_time < end
+                };
+
+                if in_window && window.speed_limit > 0 {
+                    // Use most restrictive (lowest non-zero)
+                    if effective_limit == 0 || window.speed_limit < effective_limit {
+                        effective_limit = window.speed_limit;
+                    }
+                }
+            }
+        }
+
+        // Apply to all active downloads
+        let _ = self.app.emit(
+            "speed_limit_changed",
+            json!({
+                "limit": effective_limit,
+            }),
+        );
+
+        tracing::debug!("Applied bandwidth limit: {} bytes/sec", effective_limit);
+    }
+
+    fn would_create_cycle(
+        &self,
+        db: &Database,
+        queue_id: Uuid,
+        depends_on: Uuid,
+    ) -> Result<bool, String> {
+        let mut visited = std::collections::HashSet::new();
+        let mut current = depends_on;
+
+        // Limit depth to avoid infinite loops in bad data
+        let mut safe_guard = 0;
+
+        while !visited.contains(&current) && safe_guard < 100 {
+            safe_guard += 1;
+            visited.insert(current);
+
+            if current == queue_id {
+                return Ok(true); // Cycle detected
+            }
+
+            // Get the dependency of current
+            let queue = db.get_queue_by_id(&current).map_err(|e| e.to_string())?;
+            match queue.and_then(|q| q.depends_on) {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+
+        Ok(false)
     }
 
     // --- Command Handlers ---
@@ -738,6 +1191,63 @@ impl ManagerActor {
         if let Some(qid) = queue_id {
             self.reconcile_queue(&qid).await?;
         }
+
+        Ok(())
+    }
+
+    async fn handle_start_now(&mut self, download_id: Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Clear any schedule
+        db.clear_download_schedule(&download_id)
+            .map_err(|e| e.to_string())?;
+
+        // Get download info
+        let _download = db
+            .get_download_by_id(&download_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Download not found")?;
+
+        // If in a queue with dependency, we still start it (override)
+        // Update status to queued
+        db.update_download_status(&download_id, "queued")
+            .map_err(|e| e.to_string())?;
+
+        // Start the download directly, bypassing queue checks
+        let settings = settings::load_or_create(&self.app);
+        let client = client::create(&settings)?;
+        self.handle_resume_downloads(&db, &client, &settings, vec![download_id])
+            .await?;
+
+        Ok(())
+    }
+
+    async fn handle_set_queue_dependency(
+        &mut self,
+        queue_id: Uuid,
+        depends_on: Uuid,
+    ) -> Result<(), String> {
+        if queue_id == depends_on {
+            return Err("Queue cannot depend on itself".to_string());
+        }
+
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Check for circular dependency
+        if self.would_create_cycle(&db, queue_id, depends_on)? {
+            return Err("Circular dependency detected".to_string());
+        }
+
+        db.set_queue_dependency(&queue_id, &depends_on)
+            .map_err(|e| e.to_string())?;
+
+        let _ = self.app.emit(
+            "queue_dependency_set",
+            json!({
+                "queue_id": queue_id.to_string(),
+                "depends_on": depends_on.to_string(),
+            }),
+        );
 
         Ok(())
     }
@@ -1216,6 +1726,11 @@ impl ManagerActor {
                 tracing::error!("Failed to reconcile queue after completion: {}", e);
             }
         }
+
+        // Check for dependencies that might now be runnable
+        if let Err(e) = self.evaluate_schedules().await {
+            tracing::error!("Error evaluating schedules after completion: {}", e);
+        }
     }
 }
 
@@ -1229,6 +1744,7 @@ pub fn spawn_manager(app: AppHandle) -> ManagerHandle {
         cmd_rx: rx,
         app: app.clone(),
         self_handle: handle.clone(),
+        boundary_timer_handle: None,
     };
 
     tauri::async_runtime::spawn(async move {
@@ -1383,4 +1899,80 @@ pub async fn manager_remove_from_queue(
     download_id: Uuid,
 ) -> Result<(), String> {
     manager.remove_from_queue(download_id).await
+}
+
+/// Tauri command for scheduling a download
+#[tauri::command]
+pub async fn set_download_schedule(
+    manager: tauri::State<'_, ManagerHandle>,
+    download_id: Uuid,
+    scheduled_at: String, // RFC3339 string
+) -> Result<(), String> {
+    let dt = chrono::DateTime::parse_from_rfc3339(&scheduled_at)
+        .map_err(|e| e.to_string())?
+        .with_timezone(&chrono::Utc);
+    manager.set_schedule(download_id, dt).await
+}
+
+/// Tauri command for clearing a schedule
+#[tauri::command]
+pub async fn clear_download_schedule(
+    manager: tauri::State<'_, ManagerHandle>,
+    download_id: Uuid,
+) -> Result<(), String> {
+    manager.clear_schedule(download_id).await
+}
+
+/// Tauri command for manual start override
+#[tauri::command]
+pub async fn start_download_now(
+    manager: tauri::State<'_, ManagerHandle>,
+    download_id: Uuid,
+) -> Result<(), String> {
+    manager.start_now(download_id).await
+}
+
+/// Tauri command for setting queue dependency
+#[tauri::command]
+pub async fn set_queue_dependency(
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+    depends_on: Uuid,
+) -> Result<(), String> {
+    manager.set_queue_dependency(queue_id, depends_on).await
+}
+
+/// Tauri command for clearing queue dependency
+#[tauri::command]
+pub async fn clear_queue_dependency(
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+) -> Result<(), String> {
+    manager.clear_queue_dependency(queue_id).await
+}
+
+/// Tauri command for getting bandwidth windows
+#[tauri::command]
+pub fn get_bandwidth_windows(
+    app: AppHandle,
+) -> Result<Vec<crate::settings::config::BandwidthWindow>, String> {
+    let settings = crate::settings::load_or_create(&app);
+    Ok(settings.scheduler.bandwidth_windows)
+}
+
+/// Tauri command for setting bandwidth windows
+#[tauri::command]
+pub async fn set_bandwidth_windows(
+    app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    windows: Vec<crate::settings::config::BandwidthWindow>,
+) -> Result<(), String> {
+    let mut settings = crate::settings::load_or_create(&app);
+    settings.scheduler.bandwidth_windows = windows;
+    crate::settings::save(&app, &settings).map_err(|e| e.to_string())?;
+
+    // Trigger immediate re-evaluation of limits
+    manager.apply_bandwidth_limit();
+
+    Ok(())
 }

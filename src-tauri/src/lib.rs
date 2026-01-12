@@ -108,6 +108,13 @@ pub fn run() {
             downloads::manager::cancel_queue,
             downloads::manager::manager_add_to_queue,
             downloads::manager::manager_remove_from_queue,
+            downloads::manager::set_download_schedule,
+            downloads::manager::clear_download_schedule,
+            downloads::manager::start_download_now,
+            downloads::manager::set_queue_dependency,
+            downloads::manager::clear_queue_dependency,
+            downloads::manager::get_bandwidth_windows,
+            downloads::manager::set_bandwidth_windows,
             queue::update_queue_status,
             dependencies::check_dependency,
             dependencies::install_dependency,
@@ -145,6 +152,8 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let manager = handle_for_bg.state::<downloads::manager::ManagerHandle>();
                 manager.check_queue().await;
+                // Explicitly check schedules on startup
+                manager.trigger_schedule_evaluation();
             });
 
             // Start graceful shutdown signal handler

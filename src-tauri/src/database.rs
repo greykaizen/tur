@@ -20,6 +20,7 @@ pub struct Download {
     pub accept_ranges: bool,
     pub updated_at: i64,
     pub queue_id: Option<Uuid>,
+    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Download {
@@ -59,6 +60,7 @@ pub struct Queue {
     pub parallel_count: i32, // for concurrent mode
     pub status: String,      // 'active', 'paused', 'completed'
     pub created_at: i64,
+    pub depends_on: Option<Uuid>,
 }
 
 pub struct Database {
@@ -127,6 +129,14 @@ impl Database {
             "ALTER TABLE queues ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
             [],
         );
+
+        // Scheduling System Migrations
+        let _ = conn.execute("ALTER TABLE downloads ADD COLUMN scheduled_at TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE downloads ADD COLUMN schedule_cleared INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE queues ADD COLUMN depends_on BLOB", []);
 
         // Create indexes for better performance
         conn.execute(
@@ -273,7 +283,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
-                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id, scheduled_at
              FROM downloads ORDER BY updated_at DESC",
         )?;
 
@@ -330,7 +340,7 @@ impl Database {
     ) -> Result<Option<Download>> {
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
-                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id, scheduled_at
              FROM downloads WHERE id = ?1",
         )?;
 
@@ -370,7 +380,7 @@ impl Database {
             None => {
                 let mut stmt = conn.prepare(
                     "SELECT id, filename, status, size, bytes_received, url, etag, 
-                            content_type, last_modified, destination, accept_ranges, updated_at, queue_id
+                            content_type, last_modified, destination, accept_ranges, updated_at, queue_id, scheduled_at
                      FROM downloads WHERE status IS NULL ORDER BY updated_at DESC",
                 )?;
                 let downloads = stmt.query_map([], |row| self.row_to_download(row))?;
@@ -410,6 +420,13 @@ impl Database {
             queue_id: row
                 .get::<_, Option<Vec<u8>>>(12)?
                 .map(|b| Uuid::from_slice(&b).unwrap()),
+            scheduled_at: row.get::<_, Option<String>>(13)?.map(
+                |s| {
+                    chrono::DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now())
+                }, // Fallback or handle error better?
+            ), // Actually scheduled_at is TEXT ISO8601
         })
     }
 
@@ -439,6 +456,7 @@ impl Database {
             parallel_count,
             status: "active".to_string(),
             created_at: extract_timestamp_from_uuid_v7(&id).unwrap_or(0),
+            depends_on: None,
         })
     }
 
@@ -446,7 +464,7 @@ impl Database {
     pub fn get_queues(&self) -> Result<Vec<Queue>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, mode, parallel_count, status, created_at 
+            "SELECT id, name, color, mode, parallel_count, status, created_at, depends_on
              FROM queues ORDER BY created_at ASC",
         )?;
 
@@ -460,6 +478,9 @@ impl Database {
                 parallel_count: row.get(4)?,
                 status: row.get(5)?,
                 created_at: row.get(6)?,
+                depends_on: row
+                    .get::<_, Option<Vec<u8>>>(7)?
+                    .map(|b| Uuid::from_slice(&b).unwrap()),
             })
         })?;
 
@@ -470,7 +491,7 @@ impl Database {
     pub fn get_queue_by_id(&self, queue_id: &Uuid) -> Result<Option<Queue>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, mode, parallel_count, status, created_at 
+            "SELECT id, name, color, mode, parallel_count, status, created_at, depends_on
              FROM queues WHERE id = ?1",
         )?;
 
@@ -485,6 +506,9 @@ impl Database {
                 parallel_count: row.get(4)?,
                 status: row.get(5)?,
                 created_at: row.get(6)?,
+                depends_on: row
+                    .get::<_, Option<Vec<u8>>>(7)?
+                    .map(|b| Uuid::from_slice(&b).unwrap()),
             }))
         } else {
             Ok(None)
@@ -599,7 +623,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, filename, status, size, bytes_received, url, etag, 
                     content_type, last_modified, destination, accept_ranges, 
-                    updated_at, queue_id, queue_position
+                    updated_at, queue_id, queue_position, scheduled_at
              FROM downloads 
              WHERE queue_id = ?1
              ORDER BY queue_position ASC, updated_at ASC",
@@ -631,6 +655,97 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    // --- Scheduling System ---
+
+    /// Get all downloads with schedules
+    pub fn get_scheduled_downloads(&self) -> Result<Vec<Download>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, filename, status, size, bytes_received, url, etag, 
+                    content_type, last_modified, destination, accept_ranges, updated_at, queue_id
+             FROM downloads WHERE scheduled_at IS NOT NULL AND status = 'scheduled'",
+        )?;
+
+        let downloads = stmt.query_map([], |row| self.row_to_download(row))?;
+        downloads.collect()
+    }
+
+    /// Set a download's schedule
+    pub fn set_download_schedule(
+        &self,
+        download_id: &Uuid,
+        scheduled_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE downloads SET scheduled_at = ?2, status = 'scheduled' WHERE id = ?1",
+            params![download_id.as_bytes(), scheduled_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Clear a download's schedule
+    pub fn clear_download_schedule(&self, download_id: &Uuid) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE downloads SET scheduled_at = NULL WHERE id = ?1",
+            params![download_id.as_bytes()],
+        )?;
+        Ok(())
+    }
+
+    /// Update download status wrapper (already exists as update_status, aliasing for clarity if needed or just use update_status)
+    pub fn update_download_status(&self, download_id: &Uuid, status: &str) -> Result<()> {
+        self.update_status(download_id, Some(status))
+    }
+
+    /// Get queues with dependencies
+    pub fn get_queues_with_dependencies(&self) -> Result<Vec<Queue>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, mode, parallel_count, status, created_at, depends_on
+             FROM queues WHERE depends_on IS NOT NULL",
+        )?;
+
+        let queues = stmt.query_map([], |row| {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            let depends_on_bytes: Option<Vec<u8>> = row.get(7)?;
+
+            Ok(Queue {
+                id: Uuid::from_slice(&id_bytes).unwrap(),
+                name: row.get(1)?,
+                color: row.get(2)?,
+                mode: row.get(3)?,
+                parallel_count: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+                depends_on: depends_on_bytes.map(|b| Uuid::from_slice(&b).unwrap()),
+            })
+        })?;
+
+        queues.collect()
+    }
+
+    /// Set queue dependency
+    pub fn set_queue_dependency(&self, queue_id: &Uuid, depends_on: &Uuid) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE queues SET depends_on = ?2 WHERE id = ?1",
+            params![queue_id.as_bytes(), depends_on.as_bytes()],
+        )?;
+        Ok(())
+    }
+
+    /// Clear queue dependency
+    pub fn clear_queue_dependency(&self, queue_id: &Uuid) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE queues SET depends_on = NULL WHERE id = ?1",
+            params![queue_id.as_bytes()],
+        )?;
+        Ok(())
     }
 }
 
