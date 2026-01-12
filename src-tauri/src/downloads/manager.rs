@@ -18,7 +18,7 @@ use super::download::Download;
 use super::headers;
 use super::index::Index;
 use super::workers::run_download;
-use crate::database::Database;
+use crate::database::{Database, Queue};
 use crate::downloads::client;
 use crate::settings::{self, AppSettings}; // Modified this import (removed `config::`)
 
@@ -121,6 +121,35 @@ pub enum ManagerCommand {
         reply_tx: oneshot::Sender<()>,
     },
     CheckQueue,
+
+    // Queue Commands
+    ReorderQueue {
+        queue_id: Uuid,
+        new_order: Vec<Uuid>,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    PauseQueue {
+        queue_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    ResumeQueue {
+        queue_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    CancelQueue {
+        queue_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    AddToQueue {
+        download_id: Uuid,
+        queue_id: Uuid,
+        position: Option<i32>,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
+    RemoveFromQueue {
+        download_id: Uuid,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Debug)]
@@ -324,6 +353,78 @@ impl ManagerHandle {
         self.shutdown().await;
         app.exit(0);
     }
+
+    // Queue Methods
+    pub async fn reorder_queue(&self, queue_id: Uuid, new_order: Vec<Uuid>) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::ReorderQueue {
+                queue_id,
+                new_order,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn pause_queue(&self, queue_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::PauseQueue { queue_id, reply_tx })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn resume_queue(&self, queue_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::ResumeQueue { queue_id, reply_tx })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn cancel_queue(&self, queue_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::CancelQueue { queue_id, reply_tx })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn add_to_queue(
+        &self,
+        download_id: Uuid,
+        queue_id: Uuid,
+        position: Option<i32>,
+    ) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::AddToQueue {
+                download_id,
+                queue_id,
+                position,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn remove_from_queue(&self, download_id: Uuid) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ManagerCommand::RemoveFromQueue {
+                download_id,
+                reply_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        reply_rx.await.map_err(|e| e.to_string())?
+    }
 }
 
 struct ManagerActor {
@@ -368,6 +469,8 @@ impl ManagerActor {
                         tracing::info!("⬇️ Download {} finished, removed from manager", id);
                     }
                     // Trigger queue check
+                    // Also reconcile queue if it was in one
+                    let _ = self.handle_download_completed_hook(id).await;
                     self.handle_check_queue().await;
                 }
                 ManagerCommand::CheckQueue => {
@@ -378,8 +481,265 @@ impl ManagerActor {
                     let _ = reply_tx.send(());
                     break;
                 }
+                // Queue Commands
+                ManagerCommand::ReorderQueue {
+                    queue_id,
+                    new_order,
+                    reply_tx,
+                } => {
+                    let _ = reply_tx.send(self.handle_reorder_queue(queue_id, new_order).await);
+                }
+                ManagerCommand::PauseQueue { queue_id, reply_tx } => {
+                    let _ = reply_tx.send(self.handle_pause_queue(queue_id).await);
+                }
+                ManagerCommand::ResumeQueue { queue_id, reply_tx } => {
+                    let _ = reply_tx.send(self.handle_resume_queue(queue_id).await);
+                }
+                ManagerCommand::CancelQueue { queue_id, reply_tx } => {
+                    let _ = reply_tx.send(self.handle_cancel_queue(queue_id).await);
+                }
+                ManagerCommand::AddToQueue {
+                    download_id,
+                    queue_id,
+                    position,
+                    reply_tx,
+                } => {
+                    let _ = reply_tx.send(
+                        self.handle_add_to_queue(download_id, queue_id, position)
+                            .await,
+                    );
+                }
+                ManagerCommand::RemoveFromQueue {
+                    download_id,
+                    reply_tx,
+                } => {
+                    let _ = reply_tx.send(self.handle_remove_from_queue(download_id).await);
+                }
             }
         }
+    }
+
+    // --- Core Queue Logic ---
+
+    fn get_active_zone_size(&self, queue: &Queue, queue_length: usize) -> usize {
+        match queue.mode.as_str() {
+            "sequential" => 1,
+            "parallel" => queue.parallel_count as usize,
+            "all_at_once" => queue_length,
+            _ => 1, // default to sequential
+        }
+    }
+
+    async fn reconcile_queue(&mut self, queue_id: &Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Get queue info
+        let queue = db
+            .get_queue_by_id(queue_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Queue not found")?;
+
+        // If queue is paused, don't start anything
+        if queue.status == "paused" {
+            return Ok(());
+        }
+
+        // Get downloads in queue ordered by position
+        let downloads = db
+            .get_queue_downloads_ordered(queue_id)
+            .map_err(|e| e.to_string())?;
+
+        if downloads.is_empty() {
+            // Queue is empty, mark as completed and delete
+            db.delete_queue(queue_id).map_err(|e| e.to_string())?;
+            let _ = self
+                .app
+                .emit("queue_completed", json!({"id": queue_id.to_string()}));
+            return Ok(());
+        }
+
+        // Check if all downloads are completed
+
+        // Spec says: "WHEN all downloads in a queue complete, THE Queue SHALL be automatically deleted"
+        // Let's stick to spec, but maybe cancelled ones should count towards completion?
+        // If all are completed or cancelled, queue is done.
+        let all_done = downloads.iter().all(|d| {
+            let s = d.status.as_deref();
+            s == Some("completed") || s == Some("cancelled") || s == Some("failed")
+        });
+
+        if all_done {
+            db.delete_queue(queue_id).map_err(|e| e.to_string())?;
+            let _ = self
+                .app
+                .emit("queue_completed", json!({"id": queue_id.to_string()}));
+            return Ok(());
+        }
+
+        let active_zone_size = self.get_active_zone_size(&queue, downloads.len());
+        let settings = settings::load_or_create(&self.app);
+        let client = client::create(&settings)?;
+
+        for (index, download) in downloads.iter().enumerate() {
+            let position = index + 1; // 1-based
+            let should_be_active = position <= active_zone_size;
+            let is_active = self.instances.contains_key(&download.id);
+            let is_terminal = matches!(
+                download.status.as_deref(),
+                Some("completed") | Some("cancelled") | Some("failed")
+            );
+
+            if is_terminal {
+                continue;
+            }
+
+            if should_be_active && !is_active {
+                // Start this download
+                self.start_single_download(&db, &client, &settings, download.id)
+                    .await?;
+            } else if !should_be_active && is_active {
+                // Pause this download
+                self.handle_pause(download.id);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn start_single_download(
+        &mut self,
+        db: &Database,
+        client: &reqwest::Client,
+        settings: &AppSettings,
+        download_id: Uuid,
+    ) -> Result<(), String> {
+        self.handle_resume_downloads(db, client, settings, vec![download_id])
+            .await
+    }
+
+    // --- Command Handlers ---
+
+    async fn handle_reorder_queue(
+        &mut self,
+        queue_id: Uuid,
+        new_order: Vec<Uuid>,
+    ) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Update positions in database
+        for (index, download_id) in new_order.iter().enumerate() {
+            let position = (index + 1) as i32;
+            db.update_download_position(download_id, position)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Reconcile to start/pause based on new positions
+        self.reconcile_queue(&queue_id).await
+    }
+
+    async fn handle_pause_queue(&mut self, queue_id: Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Get all downloads in queue
+        let downloads = db
+            .get_queue_downloads_ordered(&queue_id)
+            .map_err(|e| e.to_string())?;
+
+        // Pause all active downloads in this queue
+        for download in downloads {
+            if self.instances.contains_key(&download.id) {
+                self.handle_pause(download.id);
+            }
+        }
+
+        // Update queue status
+        db.update_queue_status(&queue_id, "paused")
+            .map_err(|e| e.to_string())?;
+
+        let _ = self
+            .app
+            .emit("queue_paused", json!({"id": queue_id.to_string()}));
+        Ok(())
+    }
+
+    async fn handle_resume_queue(&mut self, queue_id: Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Update queue status first
+        db.update_queue_status(&queue_id, "active")
+            .map_err(|e| e.to_string())?;
+
+        // Reconcile will start downloads in active zone
+        self.reconcile_queue(&queue_id).await?;
+
+        let _ = self
+            .app
+            .emit("queue_resumed", json!({"id": queue_id.to_string()}));
+        Ok(())
+    }
+
+    async fn handle_cancel_queue(&mut self, queue_id: Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Get all downloads in queue
+        let downloads = db
+            .get_queue_downloads_ordered(&queue_id)
+            .map_err(|e| e.to_string())?;
+
+        // Cancel all active downloads
+        for download in downloads {
+            self.handle_cancel(download.id); // Cancel Logic handles DB update and event for download
+                                             // Ensure it's removed from queue in DB too
+            db.remove_download_from_queue(&download.id)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Delete the queue
+        db.delete_queue(&queue_id).map_err(|e| e.to_string())?;
+
+        let _ = self
+            .app
+            .emit("queue_cancelled", json!({"id": queue_id.to_string()}));
+        Ok(())
+    }
+
+    async fn handle_add_to_queue(
+        &mut self,
+        download_id: Uuid,
+        queue_id: Uuid,
+        position: Option<i32>,
+    ) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Add to queue at position (or append)
+        db.add_download_to_queue(&download_id, &queue_id, position)
+            .map_err(|e| e.to_string())?;
+
+        // Reconcile to handle if this affects active zone
+        self.reconcile_queue(&queue_id).await
+    }
+
+    async fn handle_remove_from_queue(&mut self, download_id: Uuid) -> Result<(), String> {
+        let db = Database::initialize(&self.app).map_err(|e| e.to_string())?;
+
+        // Get queue_id before removing
+        let download = db
+            .get_download_by_id(&download_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Download not found")?;
+
+        let queue_id = download.queue_id;
+
+        // Remove from queue
+        db.remove_download_from_queue(&download_id)
+            .map_err(|e| e.to_string())?;
+
+        // Reconcile the queue if it existed (to potentially start next item)
+        if let Some(qid) = queue_id {
+            self.reconcile_queue(&qid).await?;
+        }
+
+        Ok(())
     }
 
     async fn handle_start(&mut self, request: DownloadRequest) -> Result<(), String> {
@@ -837,6 +1197,26 @@ impl ManagerActor {
             instance.stop();
         }
     }
+
+    async fn handle_download_completed_hook(&mut self, id: Uuid) {
+        // We might not have the instance anymore, so check DB
+        // Use match to ensure Result is consumed and dropped
+        let db = match Database::initialize(&self.app) {
+            Ok(db) => db,
+            Err(_) => return,
+        };
+
+        let queue_id = match db.get_download_by_id(&id) {
+            Ok(Some(download)) => download.queue_id,
+            _ => None,
+        };
+
+        if let Some(qid) = queue_id {
+            if let Err(e) = self.reconcile_queue(&qid).await {
+                tracing::error!("Failed to reconcile queue after completion: {}", e);
+            }
+        }
+    }
 }
 
 /// Spawn the ManagerActor and return a handle
@@ -940,4 +1320,67 @@ pub async fn delete_download(
     id: Uuid,
 ) -> Result<bool, String> {
     Ok(manager.delete(id).await)
+}
+
+/// Tauri command for reordering a queue
+#[tauri::command]
+pub async fn reorder_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+    new_order: Vec<Uuid>,
+) -> Result<(), String> {
+    manager.reorder_queue(queue_id, new_order).await
+}
+
+/// Tauri command for pausing a queue
+#[tauri::command]
+pub async fn pause_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+) -> Result<(), String> {
+    manager.pause_queue(queue_id).await
+}
+
+/// Tauri command for resuming a queue
+#[tauri::command]
+pub async fn resume_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+) -> Result<(), String> {
+    manager.resume_queue(queue_id).await
+}
+
+/// Tauri command for cancelling a queue
+#[tauri::command]
+pub async fn cancel_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    queue_id: Uuid,
+) -> Result<(), String> {
+    manager.cancel_queue(queue_id).await
+}
+
+/// Tauri command for adding a download to a queue (via manager for reconciliation)
+#[tauri::command]
+pub async fn manager_add_to_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    download_id: Uuid,
+    queue_id: Uuid,
+    position: Option<i32>,
+) -> Result<(), String> {
+    manager.add_to_queue(download_id, queue_id, position).await
+}
+
+/// Tauri command for removing a download from a queue (via manager for reconciliation)
+#[tauri::command]
+pub async fn manager_remove_from_queue(
+    _app: AppHandle,
+    manager: tauri::State<'_, ManagerHandle>,
+    download_id: Uuid,
+) -> Result<(), String> {
+    manager.remove_from_queue(download_id).await
 }

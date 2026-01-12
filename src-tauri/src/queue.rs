@@ -2,6 +2,45 @@ use crate::database::{Database, Queue};
 use tauri::AppHandle;
 use uuid::Uuid;
 
+const QUEUE_COLORS: [&str; 10] = [
+    "#6366f1", // indigo
+    "#8b5cf6", // violet
+    "#ec4899", // pink
+    "#f43f5e", // rose
+    "#f97316", // orange
+    "#eab308", // yellow
+    "#22c55e", // green
+    "#14b8a6", // teal
+    "#06b6d4", // cyan
+    "#3b82f6", // blue
+];
+
+fn get_next_queue_color(db: &Database) -> String {
+    let queues = db.get_queues().unwrap_or_default();
+    let used_colors: Vec<&str> = queues.iter().filter_map(|q| q.color.as_deref()).collect();
+
+    // Find first unused color
+    for color in QUEUE_COLORS {
+        if !used_colors.contains(&color) {
+            return color.to_string();
+        }
+    }
+
+    // All used, cycle back
+    QUEUE_COLORS[queues.len() % QUEUE_COLORS.len()].to_string()
+}
+
+fn generate_queue_name(db: &Database) -> String {
+    let mut counter = 1;
+    loop {
+        let name = format!("Queue {}", counter);
+        if !db.queue_name_exists(&name).unwrap_or(false) {
+            return name;
+        }
+        counter += 1;
+    }
+}
+
 #[tauri::command]
 pub async fn create_queue(
     app: AppHandle,
@@ -11,7 +50,16 @@ pub async fn create_queue(
     parallel_count: i32,
 ) -> Result<Queue, String> {
     let db = Database::initialize(&app).map_err(|e| e.to_string())?;
-    db.create_queue(&name, color.as_deref(), &mode, parallel_count)
+
+    let final_name = if name.trim().is_empty() {
+        generate_queue_name(&db)
+    } else {
+        name
+    };
+
+    let final_color = color.or_else(|| Some(get_next_queue_color(&db)));
+
+    db.create_queue(&final_name, final_color.as_deref(), &mode, parallel_count)
         .map_err(|e| e.to_string())
 }
 

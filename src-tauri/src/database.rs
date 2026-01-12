@@ -593,6 +593,45 @@ impl Database {
         conn.execute("DELETE FROM queues WHERE id = ?1", params![id.as_bytes()])?;
         Ok(())
     }
+    /// Get downloads in a queue ordered by position
+    pub fn get_queue_downloads_ordered(&self, queue_id: &Uuid) -> Result<Vec<Download>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, filename, status, size, bytes_received, url, etag, 
+                    content_type, last_modified, destination, accept_ranges, 
+                    updated_at, queue_id, queue_position
+             FROM downloads 
+             WHERE queue_id = ?1
+             ORDER BY queue_position ASC, updated_at ASC",
+        )?;
+
+        let downloads = stmt.query_map(params![queue_id.as_bytes()], |row| {
+            self.row_to_download(row)
+        })?;
+
+        downloads.collect()
+    }
+
+    /// Update a download's position in queue
+    pub fn update_download_position(&self, download_id: &Uuid, position: i32) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE downloads SET queue_position = ?2 WHERE id = ?1",
+            params![download_id.as_bytes(), position],
+        )?;
+        Ok(())
+    }
+
+    /// Check if queue name already exists
+    pub fn queue_name_exists(&self, name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM queues WHERE name = ?1",
+            params![name],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
 }
 
 /// Extract created_at timestamp from UUID v7

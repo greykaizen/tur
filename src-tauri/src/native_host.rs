@@ -220,16 +220,21 @@ fn handle_message(
 
 /// Start native messaging listener in a separate thread
 /// Returns a receiver for download actions
-pub fn start_native_messaging_thread() -> mpsc::Receiver<HostAction> {
+pub fn start_native_messaging_thread(app: tauri::AppHandle) -> mpsc::Receiver<HostAction> {
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
         eprintln!("[tur] Native messaging thread started");
 
         // Optimization: Cache yt-dlp path once
-        let ytdlp_path = find_ytdlp();
+        let settings = crate::settings::store::load_or_create(&app);
+        let mut manager = crate::dependencies::DependencyManager::new(&app, &settings.dependencies);
+        let ytdlp_path = manager
+            .find(crate::dependencies::DependencyKind::YtDlp)
+            .map(|p| p.to_string_lossy().to_string());
+
         if ytdlp_path.is_none() {
-            eprintln!("[tur] Warning: yt-dlp not found in PATH or app dir");
+            eprintln!("[tur] Warning: yt-dlp not found via DependencyManager");
         } else {
             eprintln!("[tur] Using yt-dlp at: {}", ytdlp_path.as_ref().unwrap());
         }
@@ -385,29 +390,4 @@ fn parse_formats(formats: &[YtDlpFormat]) -> (Vec<VideoFormat>, Vec<AudioFormat>
     });
 
     (videos, audios)
-}
-
-fn find_ytdlp() -> Option<String> {
-    // Check system paths
-    let paths = ["yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"];
-    for path in paths {
-        if Command::new(path)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Some(path.to_string());
-        }
-    }
-
-    // Check app data directory
-    if let Some(data_dir) = dirs::data_dir() {
-        let app_path = data_dir.join("tur").join("bin").join("yt-dlp");
-        if app_path.exists() {
-            return Some(app_path.to_string_lossy().to_string());
-        }
-    }
-
-    None
 }

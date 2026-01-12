@@ -96,7 +96,7 @@ impl Coordinator {
 
     /// Attempt to steal a range directly using CAS
     /// Returns (new_start, new_end, victim_id) for the requester
-    fn try_steal(
+    pub(crate) fn try_steal(
         &mut self,
         indices: &[Arc<Index>],
         requester: usize,

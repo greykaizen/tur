@@ -5,11 +5,12 @@ use tauri::{Listener, Manager};
 
 use tur_lib::database::Database;
 use tur_lib::downloads::manager::NewDownloadItem;
-use tur_lib::downloads::{spawn_manager, DownloadRequest, ManagerHandle};
+use tur_lib::downloads::{spawn_manager, DownloadRequest};
 use url::Url;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct WorkerEvent {
+    #[allow(dead_code)]
     download_id: String,
     worker_id: u8,
     state_bits: u8,
@@ -23,6 +24,7 @@ struct WorkerEvent {
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct ErrorEvent {
+    #[allow(dead_code)]
     download_id: String,
     worker_id: u8,
     code: u16,

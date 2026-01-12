@@ -32,7 +32,7 @@ fn create_dummy_download(ranges: Vec<(usize, usize)>, total_size: usize) -> Down
 
     let worker_states = (0..num_ranges)
         .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)))
-        .collect();
+        .collect::<Vec<_>>();
 
     Download {
         coordinator,
@@ -190,7 +190,7 @@ proptest! {
         let (context, _path) = create_dummy_context();
         context.flip_bit(bit);
 
-        let state_val = context.state.load(Ordering::Relaxed);
+        let state_val = context.index.state.load(Ordering::Relaxed);
         prop_assert_eq!(state_val, 1 << bit, "Flip bit failed");
         // std::fs::remove_file(_path).ok(); // auto-cleanup or ignore
     }
@@ -212,7 +212,7 @@ proptest! {
 
         context.reset_unit();
 
-        prop_assert_eq!(context.state.load(Ordering::Relaxed), 0, "State reset failed");
+        prop_assert_eq!(context.index.state.load(Ordering::Relaxed), 0, "State reset failed");
         prop_assert_eq!(context.index.start.load(Ordering::Relaxed), initial_start + 1, "Index increment failed");
     }
 
@@ -337,7 +337,7 @@ proptest! {
         coordinator.steal_ptr = 2;
 
         // Passing 2 units minimum
-        let result = coordinator.steal_range(&mut indices, 2);
+        let result = coordinator.try_steal(&mut indices, 2);
 
         if initial_units > 2 {
              // If remaining > 2 (initial_units here is remaining as start is 0)
@@ -347,11 +347,11 @@ proptest! {
              // steal_amount = ceil(3 * 0.382) = 1.14 -> 2.
              // Theft logic works.
              if result.is_some() {
-                 let (_stolen_idx, range, victim) = result.unwrap();
-                 prop_assert_eq!(victim, Some(2), "Should define correct victim index");
+                 let (_stolen_start, _stolen_end, _victim) = result.unwrap();
+                 prop_assert_eq!(_victim, 2, "Should define correct victim index");
 
                  let expected_steal = ((initial_units as f32) * 0.382).ceil() as usize;
-                 let stolen_len = range.end - range.start;
+                 let stolen_len = _stolen_end - _stolen_start;
 
                  prop_assert_eq!(stolen_len, expected_steal, "Steal logic mismatch");
 
@@ -385,12 +385,12 @@ proptest! {
 
          let mut indices = vec![idx_a.clone(), idx_b.clone(), idx_c.clone()];
 
-         let result = coord.steal_range(&mut indices, 2);
+         let result = coord.try_steal(&mut indices, 2);
 
          if (50 - 20) > 2 {
              prop_assert!(result.is_some(), "Should have stolen work from Worker C");
-              let (_stolen_idx, range, _victim) = result.unwrap();
-             prop_assert!(range.len() > 0, "Stolen range must be non-empty");
+              let (start, end, _victim) = result.unwrap();
+              prop_assert!(end - start > 0, "Stolen range must be non-empty");
          } else {
              prop_assert!(result.is_none());
          }

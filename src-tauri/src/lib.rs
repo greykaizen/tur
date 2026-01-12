@@ -102,9 +102,16 @@ pub fn run() {
             queue::get_queues,
             queue::delete_queue,
             queue::check_queue_progression,
-            queue::add_to_queue,
-            queue::remove_from_queue,
+            downloads::manager::reorder_queue,
+            downloads::manager::pause_queue,
+            downloads::manager::resume_queue,
+            downloads::manager::cancel_queue,
+            downloads::manager::manager_add_to_queue,
+            downloads::manager::manager_remove_from_queue,
             queue::update_queue_status,
+            dependencies::check_dependency,
+            dependencies::install_dependency,
+            dependencies::update_dependency,
         ])
         .on_window_event(|window, event| {
             // Handle window close request based on settings
@@ -170,7 +177,7 @@ pub fn run() {
 
             if is_native_messaging || args.native_messaging {
                 tracing::info!("[tur] Starting in native messaging mode");
-                let rx = native_host::start_native_messaging_thread();
+                let rx = native_host::start_native_messaging_thread(app.handle().clone());
                 let app_handle = app.handle().clone();
 
                 // Spawn thread to handle download actions from native messaging
@@ -320,12 +327,14 @@ fn close_download_window(app: tauri::AppHandle, label: String) -> Result<(), Str
 /// Start a yt-dlp download with format selection
 #[tauri::command]
 async fn start_ytdlp_download(
+    app: tauri::AppHandle,
     url: String,
     format_id: String,
     audio_id: Option<String>,
     output_path: String,
     filename: String,
 ) -> Result<String, String> {
+    use crate::dependencies::{DependencyKind, DependencyManager};
     use std::process::Command;
 
     tracing::info!(
@@ -337,9 +346,13 @@ async fn start_ytdlp_download(
         filename
     );
 
-    // Find yt-dlp binary
-    let ytdlp =
-        find_ytdlp().ok_or_else(|| "yt-dlp not found. Please install yt-dlp.".to_string())?;
+    // Find yt-dlp binary using DependencyManager
+    let settings = crate::settings::store::load_or_create(&app);
+    let mut manager = DependencyManager::new(&app, &settings.dependencies);
+    let ytdlp_path = manager
+        .find(DependencyKind::YtDlp)
+        .ok_or_else(|| "yt-dlp not found. Please install yt-dlp.".to_string())?;
+    let ytdlp = ytdlp_path.to_string_lossy().to_string();
 
     // Build format string: video+audio or just video
     let format_str = if let Some(audio) = audio_id {
@@ -368,34 +381,6 @@ async fn start_ytdlp_download(
     tracing::info!("[tur] yt-dlp started with PID: {:?}", child.id());
 
     Ok(format!("Download started: {}", filename))
-}
-
-/// Find yt-dlp binary in common locations
-fn find_ytdlp() -> Option<String> {
-    use std::process::Command;
-
-    // Check system paths
-    let paths = ["yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"];
-    for path in paths {
-        if Command::new(path)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Some(path.to_string());
-        }
-    }
-
-    // Check app data directory
-    if let Some(data_dir) = dirs::data_dir() {
-        let app_path = data_dir.join("tur").join("bin").join("yt-dlp");
-        if app_path.exists() {
-            return Some(app_path.to_string_lossy().to_string());
-        }
-    }
-
-    None
 }
 
 /// Internal helper to open download window (sync, for setup context)
@@ -580,3 +565,4 @@ fn delete_download_file(file_path: String) -> Result<(), String> {
         Err("File not found".to_string())
     }
 }
+pub mod dependencies;

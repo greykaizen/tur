@@ -11,6 +11,7 @@ pub struct AppSettings {
     pub send_anonymous_metrics: bool,
     pub show_notifications: bool,
     pub notification_sound: bool,
+    pub dependencies: DependencyConfig,
 }
 
 /// General application configuration
@@ -114,6 +115,15 @@ pub struct SessionConfig {
     pub metadata: bool,
 }
 
+/// Dependency path configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyConfig {
+    /// Custom path to yt-dlp binary (empty = auto-detect)
+    pub ytdlp_path: String,
+    /// Custom path to ffmpeg binary (empty = auto-detect)
+    pub ffmpeg_path: String,
+}
+
 // ============================================================================
 // Default implementations
 // ============================================================================
@@ -129,6 +139,7 @@ impl Default for AppSettings {
             send_anonymous_metrics: false,
             show_notifications: true,
             notification_sound: true,
+            dependencies: DependencyConfig::default(),
         }
     }
 }
@@ -215,6 +226,15 @@ impl Default for SessionConfig {
         Self {
             history: true,
             metadata: true,
+        }
+    }
+}
+
+impl Default for DependencyConfig {
+    fn default() -> Self {
+        Self {
+            ytdlp_path: String::new(),
+            ffmpeg_path: String::new(),
         }
     }
 }
