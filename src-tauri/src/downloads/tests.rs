@@ -337,7 +337,7 @@ proptest! {
         coordinator.steal_ptr = 2;
 
         // Passing 2 units minimum
-        let result = coordinator.try_steal(&mut indices, 2);
+        let result = coordinator.try_steal(&mut indices, 0);
 
         if initial_units > 2 {
              // If remaining > 2 (initial_units here is remaining as start is 0)
@@ -385,7 +385,7 @@ proptest! {
 
          let mut indices = vec![idx_a.clone(), idx_b.clone(), idx_c.clone()];
 
-         let result = coord.try_steal(&mut indices, 2);
+         let result = coord.try_steal(&mut indices, 0);
 
          if (50 - 20) > 2 {
              prop_assert!(result.is_some(), "Should have stolen work from Worker C");

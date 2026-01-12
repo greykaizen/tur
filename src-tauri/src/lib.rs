@@ -142,7 +142,7 @@ pub fn run() {
         })
         .setup(|app| {
             // Initialize and manage Manager
-            let manager = downloads::manager::spawn_manager(app.handle().clone());
+            let manager = downloads::manager::spawn_manager(&app.handle().clone());
             app.manage(manager);
 
             // Start background queue processor / auto resume

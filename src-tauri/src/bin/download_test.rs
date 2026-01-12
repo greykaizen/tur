@@ -66,7 +66,7 @@ async fn run_test_logic(app: tauri::AppHandle) {
     let db = Database::initialize(&app).expect("Failed to init DB");
 
     // 3. Init Manager
-    let manager = spawn_manager(app.clone());
+    let manager = spawn_manager(&app.clone());
     app.manage(manager.clone());
 
     // Shared Worker State
