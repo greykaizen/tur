@@ -5,7 +5,7 @@ use tauri::{Listener, Manager};
 
 use tur_lib::database::Database;
 use tur_lib::downloads::manager::NewDownloadItem;
-use tur_lib::downloads::{DownloadManager, DownloadRequest};
+use tur_lib::downloads::{spawn_manager, DownloadRequest, ManagerHandle};
 use url::Url;
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -64,9 +64,8 @@ async fn run_test_logic(app: tauri::AppHandle) {
     let db = Database::initialize(&app).expect("Failed to init DB");
 
     // 3. Init Manager
-    let manager = DownloadManager::new();
-    app.manage(manager);
-    let manager = app.state::<DownloadManager>();
+    let manager = spawn_manager(app.clone());
+    app.manage(manager.clone());
 
     // Shared Worker State
     let worker_infos: Arc<Mutex<HashMap<u8, WorkerInfo>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -149,12 +148,13 @@ async fn run_test_logic(app: tauri::AppHandle) {
     };
 
     manager
-        .handle_request(&app, DownloadRequest::New(vec![item]))
+        .start(DownloadRequest::New(vec![item]))
         .await
         .expect("Failed to start");
 
     // Get the download ID we just started (most recent in-progress download)
-    let download_id = db.get_downloads_by_status(None)
+    let download_id = db
+        .get_downloads_by_status(None)
         .ok()
         .and_then(|list| list.first().map(|d| d.id))
         .expect("Failed to get download ID");
@@ -180,7 +180,7 @@ async fn run_test_logic(app: tauri::AppHandle) {
                 // Update Main Bar - query by specific download ID
                 if let Ok(Some(d)) = db.get_download_by_id(&download_id) {
                          let status = d.status.as_deref().unwrap_or("run");
-                         let real_received = manager.get_bytes_downloaded(&d.id).map(|b| b as u64).unwrap_or(d.bytes_received as u64);
+                         let real_received = d.bytes_received as u64;
                          let size = d.size.unwrap_or(0) as u64;
 
                          if !initialized_size && size > 0 {
@@ -265,24 +265,24 @@ async fn run_test_logic(app: tauri::AppHandle) {
                  let id = download_id;
                      match cmd.as_str() {
                          "p" => {
-                            if manager.pause_instance(&id, &app, &db) {
+                            if manager.pause(id).await {
                                 pb_main.println("⏸️  Download paused. Press [r] to resume.");
                             }
                          },
                          "r" => {
                             pb_main.println("▶️  Resuming download...");
-                            if let Err(e) = manager.handle_request(&app, DownloadRequest::Resume(vec![id])).await {
+                            if let Err(e) = manager.start(DownloadRequest::Resume(vec![id])).await {
                                 pb_main.println(format!("❌ Resume failed: {}", e));
                             }
                          },
                          "c" => {
-                            if manager.cancel_instance(&id, &app, &db) {
+                            if manager.cancel(id).await {
                                 pb_main.println("🛑 Download cancelled. State saved for later resume.");
                             }
                          },
                          "q" => {
                             pb_main.println("👋 Shutting down gracefully...");
-                            manager.shutdown_all_graceful(&app, &db);
+                            manager.shutdown().await;
                             app.exit(0);
                             break;
                          },

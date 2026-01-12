@@ -1,8 +1,7 @@
 //! Download struct and persistence
 
 use bincode::{config, error::DecodeError, error::EncodeError, Decode, Encode};
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use super::constants::RANGE;
 use super::coordinator::Coordinator;
@@ -12,8 +11,7 @@ use super::index::Index;
 /// Other info (url, destination, size) passed as parameters to run_instance
 pub struct Download {
     pub coordinator: Coordinator,
-    pub range: Vec<Arc<Index>>,
-    pub worker_states: Vec<Arc<AtomicU8>>,
+    pub indices: Vec<Arc<Index>>, // Fixed size = num_connections
 }
 
 impl Encode for Download {
@@ -25,21 +23,17 @@ impl Encode for Download {
         self.coordinator.steal_exhausted.encode(e)?;
         self.coordinator.total_size.encode(e)?;
 
-        // Encode only incomplete ranges (start < end)
-        let incomplete: Vec<_> = self
-            .range
-            .iter()
-            .filter(|idx| idx.start.load(Ordering::Relaxed) < idx.end.load(Ordering::Relaxed))
-            .collect();
-
-        incomplete.len().encode(e)?;
-        for index in incomplete {
-            index.encode(e)?;
+        // Encode indices snapshot
+        // We only save incomplete indices or significant state
+        // For simplicity and correctness with the new design, we snapshot all indices
+        // but only those active are truly needed. However, to maintain fixed structure on load:
+        let snapshot = self.snapshot_indices();
+        snapshot.len().encode(e)?;
+        for (start, end, state) in snapshot {
+            start.encode(e)?;
+            end.encode(e)?;
+            state.encode(e)?;
         }
-
-        // Encode worker states snapshot
-        let states = self.snapshot_states();
-        states.encode(e)?;
         Ok(())
     }
 }
@@ -56,30 +50,30 @@ impl<Context> Decode<Context> for Download {
             Coordinator::from_parts(current, max_index, steal_ptr, steal_exhausted, total_size);
 
         let len = usize::decode(d)?;
-        let mut range = Vec::with_capacity(len);
+        let mut indices = Vec::with_capacity(len);
         for _ in 0..len {
-            range.push(Arc::new(Index::decode(d)?));
+            let start = usize::decode(d)?;
+            let end = usize::decode(d)?;
+            let state = u8::decode(d)?;
+
+            let idx = Index::new();
+            idx.start.store(start, Ordering::Relaxed);
+            idx.end.store(end, Ordering::Relaxed);
+            idx.state.store(state, Ordering::Relaxed);
+            indices.push(Arc::new(idx));
         }
 
         // Restore steal_ptr to valid position after loading cleaned Vec
-        if !range.is_empty() {
-            coordinator.steal_ptr = coordinator.steal_ptr.min((range.len() - 1) as u8);
-            if coordinator.steal_ptr < 2 && range.len() >= 3 {
+        if !indices.is_empty() {
+            coordinator.steal_ptr = coordinator.steal_ptr.min((indices.len() - 1) as u8);
+            if coordinator.steal_ptr < 2 && indices.len() >= 3 {
                 coordinator.steal_ptr = 2;
             }
         }
 
-        // Decode worker states
-        let state_bytes: Vec<u8> = Decode::decode(d)?;
-        let worker_states = state_bytes
-            .into_iter()
-            .map(|b| Arc::new(AtomicU8::new(b)))
-            .collect();
-
         Ok(Download {
             coordinator,
-            range,
-            worker_states,
+            indices,
         })
     }
 }
@@ -90,10 +84,12 @@ impl Download {
     /// - num_conn: number of worker threads
     pub fn new(size: usize, num_conn: u8) -> Self {
         let max_index = Self::get_index(size >> 23).unwrap_or(0);
+
+        let indices: Vec<Arc<Index>> = (0..num_conn).map(|_| Arc::new(Index::new())).collect();
+
         Download {
             coordinator: Coordinator::new(max_index, size),
-            range: Vec::with_capacity(num_conn as usize),
-            worker_states: (0..num_conn).map(|_| Arc::new(AtomicU8::new(0))).collect(),
+            indices,
         }
     }
 
@@ -135,25 +131,28 @@ impl Download {
             total_size,
         );
 
-        let mut range = Vec::with_capacity(num_conn as usize);
+        let mut indices = Vec::with_capacity(num_conn as usize);
+
+        // Populate with empty indices initially
+        for _ in 0..num_conn {
+            indices.push(Arc::new(Index::new()));
+        }
 
         // Convert byte offset to unit index (8MB units)
         // Unit = bytes >> 23 (divide by 8MB)
         let start_unit = offset >> 23;
         let total_units = (total_size + (1 << 23) - 1) >> 23; // ceil division
 
-        // Create one index for the remaining units
-        if start_unit < total_units {
-            range.push(Arc::new(Index {
-                start: AtomicUsize::new(start_unit),
-                end: AtomicUsize::new(total_units),
-            }));
+        // Use the first worker for the remaining units
+        if !indices.is_empty() && start_unit < total_units {
+            indices[0].start.store(start_unit, Ordering::Relaxed);
+            indices[0].end.store(total_units, Ordering::Relaxed);
+            indices[0].state.store(0, Ordering::Relaxed);
         }
 
         Download {
             coordinator,
-            range,
-            worker_states: (0..num_conn).map(|_| Arc::new(AtomicU8::new(0))).collect(),
+            indices,
         }
     }
 
@@ -202,14 +201,7 @@ impl Download {
     /// Calculate total units still remaining to download
     /// Each unit is 8MB (1 << 23 bytes)
     pub fn units_remaining(&self) -> usize {
-        self.range
-            .iter()
-            .map(|idx| {
-                let start = idx.start.load(Ordering::Relaxed);
-                let end = idx.end.load(Ordering::Relaxed);
-                end.saturating_sub(start)
-            })
-            .sum()
+        self.indices.iter().map(|idx| idx.remaining_units()).sum()
     }
 
     /// Calculate total bytes still remaining to download (approximate)
@@ -218,20 +210,17 @@ impl Download {
         self.units_remaining() << 23
     }
 
-    /// Snapshot worker states for serialization
-    pub fn snapshot_states(&self) -> Vec<u8> {
-        self.worker_states
+    /// Snapshot indices for serialization (atomic reads only)
+    pub fn snapshot_indices(&self) -> Vec<(usize, usize, u8)> {
+        self.indices
             .iter()
-            .map(|s| s.load(Ordering::Relaxed))
+            .map(|idx| {
+                (
+                    idx.start.load(Ordering::Relaxed),
+                    idx.end.load(Ordering::Relaxed),
+                    idx.state.load(Ordering::Relaxed),
+                )
+            })
             .collect()
-    }
-
-    /// Restore worker states from snapshot (updates in place if lengths match)
-    pub fn restore_states(&self, states: &[u8]) {
-        for (i, state) in states.iter().enumerate() {
-            if let Some(atomic) = self.worker_states.get(i) {
-                atomic.store(*state, Ordering::Relaxed);
-            }
-        }
     }
 }

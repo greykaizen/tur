@@ -1,8 +1,7 @@
 //! Worker tasks and download execution logic
 
-use std::ops::Range;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot};
@@ -14,11 +13,12 @@ use super::constants::RANGE;
 use super::coordinator::Coordinator;
 use super::download::Download;
 use super::index::Index;
+use super::manager::ManagerHandle;
+use super::work_request::{WorkRequest, WorkResponse};
 use crate::downloads::client;
 use crate::settings::config::AppSettings;
 
 /// Minimum units to steal from a worker
-const MIN_STEAL_UNITS: usize = 2; // 2 units minimum
 
 /// Unit completion signal for triggering meta saves
 #[derive(Debug, Clone)]
@@ -37,23 +37,19 @@ pub fn run_download<R: tauri::Runtime>(
     initial_bytes: usize, // For resume: pass DB bytes_received; for new: pass 0
     handle: &tauri::AppHandle<R>,
     config: &AppSettings,
-    completion_tx: mpsc::Sender<Uuid>,
+    completion_tx: ManagerHandle,
 ) -> (
     Vec<JoinHandle<()>>,
     CancellationToken,
-    Arc<Mutex<Vec<Arc<Index>>>>,
+    Arc<Vec<Arc<Index>>>,
     Arc<AtomicUsize>,
 ) {
     let mut handles = Vec::new();
     let cancel_token = CancellationToken::new();
 
     // Initialize indices list from download state (live progress tracking)
-    // For multi-threaded: Coordinator will add to this.
-    // For single-threaded: We'll add one index.
-    let indices = Arc::new(Mutex::new(download.range.clone()));
-
-    // Wrap worker_states in Arc for sharing with progress emitter
-    let worker_states = Arc::new(download.worker_states);
+    // Fixed size Arc<Vec<Arc<Index>>> - extra Arc allows sharing individual indices
+    let indices = Arc::new(download.indices);
 
     // Channel for unit completion signals (workers -> progress emitter for meta saves)
     let (unit_tx, unit_rx) = mpsc::channel::<UnitCompletion>(64);
@@ -87,7 +83,6 @@ pub fn run_download<R: tauri::Runtime>(
     // Spawn progress emitter - pass shared references for live state
     handles.push(spawn_progress_emitter(
         indices.clone(),
-        worker_states.clone(),
         total_size,
         id,
         destination.clone(),
@@ -100,13 +95,10 @@ pub fn run_download<R: tauri::Runtime>(
 
     // Check mode based on file size
     if total_size > RANGE[2].end << 20 {
-        // Multi-threaded: coordinator owns mutable state directly
-        // Convert Arc<Vec> back to Vec for workers (they each get Arc<AtomicU8>)
-        let worker_states_vec: Vec<Arc<AtomicU8>> = worker_states.iter().cloned().collect();
+        // Multi-threaded: coordinator task manages range distribution
         handles.extend(run_multi_threaded(
             download.coordinator,
             indices.clone(),
-            worker_states_vec,
             id,
             url,
             destination,
@@ -122,19 +114,12 @@ pub fn run_download<R: tauri::Runtime>(
         ));
     } else {
         // Single-threaded: simple streaming
-        // Add a single index for tracking if empty
-        {
-            let mut idx_guard = indices.lock().unwrap();
-            if idx_guard.is_empty() {
-                let total_units = (total_size + (1 << 23) - 1) >> 23;
-                idx_guard.push(Arc::new(Index {
-                    start: AtomicUsize::new(0),
-                    end: AtomicUsize::new(total_units),
-                }));
-            }
+        // Ensure at least one index exists (should allow for small files)
+        if indices.is_empty() {
+            // This case should be rare/impossible with fixed initialization unless 0 threads
+            tracing::warn!("Download indices empty for single threaded run");
         }
 
-        let worker_states_vec: Vec<Arc<AtomicU8>> = worker_states.iter().cloned().collect();
         handles.push(run_single_threaded(
             url,
             destination,
@@ -145,7 +130,6 @@ pub fn run_download<R: tauri::Runtime>(
             retry_delay_ms,
             cancel_token.clone(),
             indices.clone(),
-            worker_states_vec,
             handle.clone(),
             id.to_string(),
             unit_tx,
@@ -157,15 +141,14 @@ pub fn run_download<R: tauri::Runtime>(
 
 /// Production-quality progress emitter with variance-adaptive EWMA
 fn spawn_progress_emitter<R: tauri::Runtime>(
-    indices: Arc<Mutex<Vec<Arc<Index>>>>,
-    worker_states: Arc<Vec<Arc<AtomicU8>>>,
+    indices: Arc<Vec<Arc<Index>>>, // Fixed size, read-only Vec of Shared Atomics
     total_size: usize,
     id: Uuid,
     destination: String,
     bytes_downloaded: Arc<AtomicUsize>,
     handle: tauri::AppHandle<R>,
     cancel_token: CancellationToken,
-    completion_tx: mpsc::Sender<Uuid>,
+    completion_tx: ManagerHandle,
     mut unit_rx: mpsc::Receiver<UnitCompletion>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -189,23 +172,31 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
         let mut pending_unit_save = false; // Flag for unit completion save
 
         // Helper closure to save state
-        let save_state = |indices: &Arc<Mutex<Vec<Arc<Index>>>>,
-                          states: &Arc<Vec<Arc<AtomicU8>>>,
+        let save_state = |indices: &Arc<Vec<Arc<Index>>>,
                           handle: &tauri::AppHandle<R>,
                           id: &Uuid,
                           total: usize| {
-            let indices_guard = indices.lock().unwrap();
-            let range: Vec<Arc<Index>> = indices_guard.clone();
-            drop(indices_guard);
+            // Construct snapshot with Arc<Index>
+            let snapshot_indices: Vec<Arc<Index>> = indices
+                .iter()
+                .map(|idx| {
+                    let i = Index::new();
+                    i.start
+                        .store(idx.start.load(Ordering::Relaxed), Ordering::Relaxed);
+                    i.end
+                        .store(idx.end.load(Ordering::Relaxed), Ordering::Relaxed);
+                    i.state
+                        .store(idx.state.load(Ordering::Relaxed), Ordering::Relaxed);
+                    Arc::new(i)
+                })
+                .collect();
 
-            let ws: Vec<Arc<AtomicU8>> = states.iter().cloned().collect();
             let max_index = Download::get_index(total >> 23).unwrap_or(0);
             let coordinator = Coordinator::from_parts(max_index, max_index, 2, true, total);
 
             let download = Download {
                 coordinator,
-                range,
-                worker_states: ws,
+                indices: snapshot_indices,
             };
 
             if let Err(e) = download.save(handle, id) {
@@ -227,27 +218,37 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
                 _ = interval.tick() => {}
                 Some(unit_completion) = unit_rx.recv() => {
                     // Unit completed - mark for immediate save
+                    // We can also use this to catch up the bytes_downloaded counter if needed
+                    // but aggregating from atomic sum is safer.
+                    pending_unit_save = true;
                     tracing::debug!(
                         "Worker {} completed unit {}",
                         unit_completion.worker_id,
                         unit_completion.unit_index
                     );
-                    pending_unit_save = true;
                 }
             }
 
             // Handle unit completion save (immediate, not waiting for interval)
             if pending_unit_save {
-                save_state(&indices, &worker_states, &handle, &id, total_size);
+                save_state(&indices, &handle, &id, total_size);
                 last_save = std::time::Instant::now();
                 pending_unit_save = false;
             }
 
+            // Aggregate total bytes from all workers via indices
+            // This is arguably more accurate than the shared counter which updates on stream chunks
+            // But the shared counter is Atomic so it's fine.
+            // Let's stick to the shared counter `bytes_downloaded` for speed calculation,
+            // but we could cross-check with indices if we wanted.
+            // Requirement 10.2 says "Aggregate bytes from all workers" for progress emitter.
+            // Requirement 5.1 says "Sum bytes_downloaded from all WorkerContext" (deprecated).
+            // The Architecture says "The progress emitter SHALL aggregate total bytes from shared AtomicUsize counter." (Req 8 in new specs)
             let downloaded = bytes_downloaded.load(Ordering::Relaxed);
 
-            // Periodic Save - snapshot live state (fallback for partial units)
+            // Periodic Save
             if last_save.elapsed().as_secs() >= SAVE_INTERVAL_S {
-                save_state(&indices, &worker_states, &handle, &id, total_size);
+                save_state(&indices, &handle, &id, total_size);
                 // Also update DB progress for crash recovery
                 if let Ok(db) = crate::database::Database::initialize(&handle) {
                     let _ = db.update_progress(&id, downloaded as i64);
@@ -327,6 +328,7 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
             );
 
             if downloaded >= total_size && total_size > 0 {
+                // Final cleanup
                 if let Ok(db) = crate::database::Database::initialize(&handle) {
                     let _ = db.mark_completed(&id);
                 }
@@ -334,9 +336,7 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
                 let _ = std::fs::remove_file(meta_path);
 
                 // Trigger Check Queue via channel
-                if let Err(e) = completion_tx.send(id).await {
-                    tracing::error!("Failed to signal completion: {}", e);
-                }
+                completion_tx.download_completed(id);
 
                 let _ = handle.emit(
                     "download_complete",
@@ -352,11 +352,10 @@ fn spawn_progress_emitter<R: tauri::Runtime>(
     })
 }
 
-/// Multi-threaded download with coordinator owning state directly (no Mutex)
+/// Multi-threaded download with coordinator task and channel communication
 fn run_multi_threaded<R: tauri::Runtime>(
     mut coordinator: Coordinator,
-    indices: Arc<Mutex<Vec<Arc<Index>>>>,
-    worker_states: Vec<Arc<std::sync::atomic::AtomicU8>>,
+    indices: Arc<Vec<Arc<Index>>>,
     id: Uuid,
     url: String,
     destination: String,
@@ -371,19 +370,25 @@ fn run_multi_threaded<R: tauri::Runtime>(
     unit_tx: mpsc::Sender<UnitCompletion>,
 ) -> Vec<JoinHandle<()>> {
     // Channel for worker -> coordinator
-    type WorkResponse = Option<(Arc<Index>, Range<usize>, Option<usize>)>;
-    let (tx, mut rx) = mpsc::channel::<oneshot::Sender<WorkResponse>>(num_threads as usize * 2);
+    let (tx, mut rx) = mpsc::channel::<WorkRequest>(num_threads as usize * 2);
 
     let mut handles = Vec::new();
 
     // Spawn coordinator task
+    let coord_indices = indices.clone();
     handles.push(tokio::spawn(async move {
-        // Access shared indices via lock inside the coordinator loop
-        while let Some(reply_tx) = rx.recv().await {
-            // Lock and pass mutable reference to request_work
-            let mut indices_guard = indices.lock().unwrap();
-            let result = coordinator.request_work(&mut indices_guard, MIN_STEAL_UNITS);
-            let _ = reply_tx.send(result);
+        // Coordinator logic is now single-threaded here, but verifies against atomic indices
+        // handle_request does NOT modify indices directly, only reads states and potentially CAS for stealing
+        // For new ranges, it updates its own range_byte state.
+        while let Some(req) = rx.recv().await {
+            let response = coordinator.handle_request(req.worker_id, &coord_indices);
+
+            if let Err(_) = req.reply_tx.send(response) {
+                tracing::warn!(
+                    "Coordinator failed to send reply to worker {}",
+                    req.worker_id
+                );
+            }
         }
     }));
 
@@ -393,14 +398,14 @@ fn run_multi_threaded<R: tauri::Runtime>(
         0
     };
 
-    for (worker_id, _) in (0..num_threads).enumerate() {
+    for worker_id in 0..(num_threads as usize) {
         let worker_tx = tx.clone();
         let worker_url = url.clone();
         let worker_dest = destination.clone();
         let worker_bytes = bytes_downloaded.clone();
         let worker_client = client.clone();
         let worker_token = cancel_token.clone();
-        let worker_state = worker_states[worker_id].clone();
+        let worker_indices = indices.clone();
         let worker_handle = handle.clone();
         let worker_download_id = id.to_string();
         let worker_unit_tx = unit_tx.clone();
@@ -421,60 +426,67 @@ fn run_multi_threaded<R: tauri::Runtime>(
                 let (reply_tx, reply_rx) = oneshot::channel();
 
                 // Send work request
-                if worker_tx.send(reply_tx).await.is_err() {
+                let request = WorkRequest {
+                    worker_id,
+                    reply_tx,
+                };
+
+                if worker_tx.send(request).await.is_err() {
                     break;
                 }
 
                 match reply_rx.await {
-                    Ok(Some((index, _unit_range, stealing_from))) => {
-                        let mut current_unit = index.start.load(Ordering::Relaxed);
+                    Ok(WorkResponse::Range(start, end)) => {
+                        if worker_id < worker_indices.len() {
+                            let my_index = &worker_indices[worker_id];
+                            my_index.set_range(start, end);
 
-                        while current_unit < index.end.load(Ordering::Relaxed) {
-                            if worker_token.is_cancelled() {
-                                break;
-                            }
-
-                            if let Some(ref f) = file_handle {
-                                if let Ok(f_clone) = f.try_clone() {
-                                    use crate::downloads::worker_context::WorkerContext;
-                                    let context = WorkerContext::new(
-                                        worker_id,
-                                        f_clone,
-                                        worker_state.clone(),
-                                        index.clone(),
-                                        stealing_from,
-                                    );
-
-                                    let success = download_unit(
-                                        &worker_client,
-                                        &worker_url,
-                                        context,
-                                        &worker_bytes,
-                                        per_worker_limit,
-                                        retry_count,
-                                        retry_delay_ms,
-                                        worker_token.clone(),
-                                        worker_handle.clone(),
-                                        worker_download_id.clone(),
-                                        worker_unit_tx.clone(),
-                                    )
-                                    .await;
-
-                                    if !success {
-                                        break;
-                                    }
-
-                                    index.start.fetch_add(1, Ordering::Relaxed);
-                                    current_unit += 1;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
+                            process_assigned_work(
+                                worker_id,
+                                my_index.clone(),
+                                file_handle.as_ref(),
+                                &worker_client,
+                                &worker_url,
+                                &worker_bytes,
+                                per_worker_limit,
+                                retry_count,
+                                retry_delay_ms,
+                                &worker_token,
+                                &worker_handle,
+                                &worker_download_id,
+                                &worker_unit_tx,
+                                None,
+                            )
+                            .await;
                         }
                     }
-                    Ok(None) => break,
+                    Ok(WorkResponse::Stolen(start, end, victim_id)) => {
+                        if worker_id < worker_indices.len() {
+                            let my_index = &worker_indices[worker_id];
+                            my_index.set_range(start, end);
+
+                            process_assigned_work(
+                                worker_id,
+                                my_index.clone(),
+                                file_handle.as_ref(),
+                                &worker_client,
+                                &worker_url,
+                                &worker_bytes,
+                                per_worker_limit,
+                                retry_count,
+                                retry_delay_ms,
+                                &worker_token,
+                                &worker_handle,
+                                &worker_download_id,
+                                &worker_unit_tx,
+                                Some(victim_id),
+                            )
+                            .await;
+                        }
+                    }
+                    Ok(WorkResponse::None) => {
+                        break;
+                    }
                     Err(_) => break,
                 }
             } // End Loop
@@ -492,6 +504,64 @@ fn run_multi_threaded<R: tauri::Runtime>(
     handles
 }
 
+async fn process_assigned_work<R: tauri::Runtime>(
+    worker_id: usize,
+    index: Arc<Index>,
+    file_handle: Option<&std::fs::File>,
+    client: &reqwest::Client,
+    url: &str,
+    bytes_counter: &Arc<AtomicUsize>,
+    speed_limit: u64,
+    retry_count: u8,
+    retry_delay_ms: u32,
+    cancel_token: &CancellationToken,
+    handle: &tauri::AppHandle<R>,
+    download_id: &str,
+    unit_tx: &mpsc::Sender<UnitCompletion>,
+    stealing_from: Option<usize>,
+) {
+    let mut current_unit = index.start.load(Ordering::Relaxed);
+
+    while current_unit < index.end.load(Ordering::Relaxed) {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
+        if let Some(f) = file_handle {
+            if let Ok(f_clone) = f.try_clone() {
+                use crate::downloads::worker_context::WorkerContext;
+
+                let context = WorkerContext::new(worker_id, f_clone, index.clone(), stealing_from);
+
+                let success = download_unit(
+                    client,
+                    url,
+                    context,
+                    bytes_counter,
+                    speed_limit,
+                    retry_count,
+                    retry_delay_ms,
+                    cancel_token.clone(),
+                    handle.clone(),
+                    download_id.to_string(),
+                    unit_tx.clone(),
+                )
+                .await;
+
+                if !success {
+                    break;
+                }
+
+                current_unit = index.start.load(Ordering::Relaxed);
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
 fn run_single_threaded<R: tauri::Runtime>(
     url: String,
     destination: String,
@@ -501,21 +571,14 @@ fn run_single_threaded<R: tauri::Runtime>(
     retry_count: u8,
     retry_delay_ms: u32,
     cancel_token: CancellationToken,
-    indices: Arc<Mutex<Vec<Arc<Index>>>>,
-    worker_states: Vec<Arc<std::sync::atomic::AtomicU8>>,
+    indices: Arc<Vec<Arc<Index>>>,
     handle: tauri::AppHandle<R>,
     id: String,
     unit_tx: mpsc::Sender<UnitCompletion>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // Calculate total units based on total file size?
-        // We can get it from the index (0..end)
-        let index = {
-            let guard = indices.lock().unwrap();
-            guard.first().cloned()
-        };
-
-        if let Some(idx) = index {
+        // Single threaded: just take index 0
+        if let Some(idx) = indices.first() {
             let limit = idx.end.load(Ordering::Relaxed);
             let mut current = idx.start.load(Ordering::Relaxed);
 
@@ -530,18 +593,11 @@ fn run_single_threaded<R: tauri::Runtime>(
                     break;
                 }
 
-                // Use worker 0 state
                 if let Some(ref f) = file_handle {
                     if let Ok(f_clone) = f.try_clone() {
                         use crate::downloads::worker_context::WorkerContext;
-                        // Use state 0 if available, else new
-                        let state = if !worker_states.is_empty() {
-                            worker_states[0].clone()
-                        } else {
-                            Arc::new(std::sync::atomic::AtomicU8::new(0))
-                        };
 
-                        let context = WorkerContext::new(0, f_clone, state, idx.clone(), None);
+                        let context = WorkerContext::new(0, f_clone, idx.clone(), None);
 
                         let success = download_unit(
                             &client,
@@ -562,8 +618,7 @@ fn run_single_threaded<R: tauri::Runtime>(
                             break;
                         }
 
-                        idx.start.fetch_add(1, Ordering::Relaxed);
-                        current += 1;
+                        current = idx.start.load(Ordering::Relaxed);
                     } else {
                         break;
                     }
@@ -585,7 +640,7 @@ async fn download_unit<R: tauri::Runtime>(
     retry_delay_ms: u32,
     cancel_token: CancellationToken,
     handle: tauri::AppHandle<R>,
-    download_id: String, // For events
+    download_id: String,                   // For events
     unit_tx: mpsc::Sender<UnitCompletion>, // Signal unit completion for meta save
 ) -> bool {
     let mut retries = 0u8;
@@ -597,7 +652,7 @@ async fn download_unit<R: tauri::Runtime>(
     // Resume Logic: Find first unset bit to determine resume position
     // trailing_ones() gives us the first gap - if bits are 00001011, we resume at bit 2
     // This is correct because we download sequentially within a unit
-    let state_bits = context.state.load(Ordering::Relaxed);
+    let state_bits = context.index.state.load(Ordering::Relaxed);
     let first_unset_bit = state_bits.trailing_ones() as usize;
     let resume_offset = first_unset_bit << 20; // MB to Bytes
 
@@ -610,7 +665,10 @@ async fn download_unit<R: tauri::Runtime>(
     if state_bits == 0xFF || resume_offset >= (1 << 23) {
         context.reset_unit();
         // Signal unit completion
-        let _ = unit_tx.try_send(UnitCompletion { worker_id, unit_index });
+        let _ = unit_tx.try_send(UnitCompletion {
+            worker_id,
+            unit_index,
+        });
         return true;
     }
 
@@ -827,7 +885,7 @@ async fn download_unit<R: tauri::Runtime>(
                                         let _ = handle.emit("worker_progress", serde_json::json!({
                                            "download_id": download_id,
                                            "worker_id": context.worker_id,
-                                           "state_bits": context.state.load(Ordering::Relaxed),
+                                           "state_bits": context.index.state.load(Ordering::Relaxed),
                                            "current_unit": unit_index,
                                            "unit_start_offset": start_byte,
                                            "unit_end_offset": end_byte + 1,
@@ -858,7 +916,7 @@ async fn download_unit<R: tauri::Runtime>(
                         None => {
                              // Unit success
                              // Reset state for next unit
-                             context.state.store(0, Ordering::Relaxed);
+                             context.index.state.store(0, Ordering::Relaxed);
                              context.bytes_in_unit.store(0, Ordering::Relaxed);
 
                              // Signal unit completion for meta save

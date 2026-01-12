@@ -2,7 +2,7 @@
 
 use bincode::{Decode, Encode};
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::constants::RANGE;
@@ -26,6 +26,8 @@ pub struct Coordinator {
     /// Total file size in bytes (for clamping ranges)
     pub total_size: usize,
 }
+
+use super::work_request::WorkResponse;
 
 impl Coordinator {
     pub fn new(max_index: u8, total_size: usize) -> Self {
@@ -53,13 +55,26 @@ impl Coordinator {
         }
     }
 
+    /// Handle work request from a worker
+    /// Returns a WorkResponse to be sent back via channel
+    /// Does NOT modify indices directly
+    pub fn handle_request(&mut self, worker_id: usize, indices: &[Arc<Index>]) -> WorkResponse {
+        // 1. Try to get new range
+        if let Some((start, end)) = self.new_range() {
+            return WorkResponse::Range(start, end);
+        }
+
+        // 2. Try to steal from existing workers
+        if let Some((start, end, victim)) = self.try_steal(indices, worker_id) {
+            return WorkResponse::Stolen(start, end, victim);
+        }
+
+        WorkResponse::None
+    }
+
     /// Request a new range from the coordinator
-    /// Creates Index, pushes to Vec, returns the byte range
-    /// Returns Some((Arc<Index>, Range)) if available, None if exhausted
-    pub fn new_range(
-        &mut self,
-        range_vec: &mut Vec<Arc<Index>>,
-    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
+    /// Returns (start_unit, end_unit) if available
+    fn new_range(&mut self) -> Option<(usize, usize)> {
         if self.range_byte.start < self.range_byte.end {
             let idx = self.range_byte.start as usize;
             self.range_byte.start += 1;
@@ -73,70 +88,51 @@ impl Coordinator {
             let start_unit = unit_range.start;
             let end_unit = unit_range.end.min(total_units);
 
-            let index = Arc::new(Index {
-                start: AtomicUsize::new(start_unit),
-                end: AtomicUsize::new(end_unit),
-            });
-
-            range_vec.push(index.clone());
-            Some((index, start_unit..end_unit, None))
+            Some((start_unit, end_unit))
         } else {
             None
         }
     }
 
-    /// Request work: tries new range first, then steal
-    /// Returns Some((Arc<Index>, Range)) or None if no work available
-    pub fn request_work(
+    /// Attempt to steal a range directly using CAS
+    /// Returns (new_start, new_end, victim_id) for the requester
+    fn try_steal(
         &mut self,
-        range_vec: &mut Vec<Arc<Index>>,
-        min_steal_units: usize,
-    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
-        // 1. Try to get new range
-        if let Some(result) = self.new_range(range_vec) {
-            return Some(result);
-        }
-
-        // 2. Try to steal from existing workers
-        self.steal_range(range_vec, min_steal_units)
-    }
-
-    /// Attempt to steal a range from a target worker's Index
-    /// Uses 38.2% golden ratio (1 - PHI^-1), rounded high
-    /// Starts from steal_ptr, wraps around
-    /// Returns None if full circle completed (steal_exhausted set)
-    pub fn steal_range(
-        &mut self,
-        indices: &mut Vec<Arc<Index>>,
-        min_steal_units: usize,
-    ) -> Option<(Arc<Index>, Range<usize>, Option<usize>)> {
-        if self.steal_exhausted || indices.is_empty() {
+        indices: &[Arc<Index>],
+        requester: usize,
+    ) -> Option<(usize, usize, usize)> {
+        if self.steal_exhausted {
             return None;
         }
 
-        let num_indices = indices.len();
+        let num_workers = indices.len();
+        if num_workers == 0 {
+            return None;
+        }
+
         let start_ptr = self.steal_ptr as usize;
 
         // Try each index once (full circle detection)
-        for attempt in 0..num_indices {
-            let target = (start_ptr + attempt) % num_indices;
+        for attempt in 0..num_workers {
+            let victim = (start_ptr + attempt) % num_workers;
 
-            let index = &indices[target];
-            let current_start = index.start.load(Ordering::Relaxed);
-            let current_end = index.end.load(Ordering::Relaxed);
-            let remaining = current_end.saturating_sub(current_start);
-
-            // Skip completed or too-small ranges
-            if remaining < 2 || remaining <= min_steal_units {
+            // Don't steal from self
+            if victim == requester {
                 continue;
             }
 
-            // Steal 38.2% (1 - PHI^-1) from the top, rounded high
-            // Using units now
-            let steal_amount = ((remaining as f32) * 0.382).ceil() as usize;
+            let victim_idx = &indices[victim];
+            let current_start = victim_idx.start.load(Ordering::Relaxed);
+            let current_end = victim_idx.end.load(Ordering::Relaxed);
+            let remaining = current_end.saturating_sub(current_start);
 
-            // Ensure we don't drain it completely (safety) - already checked >=2
-            // And ensure we steal at least 1 unit if math is tiny (ceil handles it, but check 0)
+            // Need at least 2 units to steal
+            if remaining < 2 {
+                continue;
+            }
+
+            // Steal 38.2% (golden ratio)
+            let steal_amount = ((remaining as f32) * 0.382).ceil() as usize;
             if steal_amount == 0 {
                 continue;
             }
@@ -144,24 +140,18 @@ impl Coordinator {
             let new_end = current_end - steal_amount;
 
             // CAS to atomically shrink the victim's range
-            if index
+            // We use SeqCst for success to ensure total order of steals, Relaxed for failure
+            if victim_idx
                 .end
                 .compare_exchange(current_end, new_end, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
-                // Create new Index for stolen portion
-                let stolen_index = Arc::new(Index {
-                    start: AtomicUsize::new(new_end),
-                    end: AtomicUsize::new(current_end),
-                });
-
-                // Push stolen index to Vec
-                indices.push(stolen_index.clone());
-
                 // Update steal_ptr for next attempt
-                self.steal_ptr = ((target + 1) % num_indices) as u8;
+                self.steal_ptr = ((victim + 1) % num_workers) as u8;
 
-                return Some((stolen_index, new_end..current_end, Some(target)));
+                // Return the stolen range (from new_end to old_end)
+                // The requester will take ownership of [new_end, current_end)
+                return Some((new_end, current_end, victim));
             }
         }
 
@@ -170,44 +160,13 @@ impl Coordinator {
         None
     }
 
-    /// Reset steal_exhausted flag (call when a worker finishes, freeing opportunities)
+    /// Reset steal_exhausted flag
     pub fn reset_steal(&mut self) {
         self.steal_exhausted = false;
     }
 
-    /// Check if coordinator can provide more work (new ranges or stealing)
+    /// Check if work is potentially available
     pub fn has_work(&self) -> bool {
         self.range_byte.start < self.range_byte.end || !self.steal_exhausted
-    }
-
-    /// Prepare for save: retain incomplete indices, adjust steal_ptr
-    /// Returns the value steal_ptr was pointing to (for re-finding after load)
-    pub fn prepare_save(&self, indices: &[Arc<Index>]) -> Option<usize> {
-        if (self.steal_ptr as usize) < indices.len() {
-            let idx = &indices[self.steal_ptr as usize];
-            Some(idx.start.load(Ordering::Relaxed))
-        } else {
-            None
-        }
-    }
-
-    /// After loading and cleaning Vec, find new steal_ptr position
-    pub fn restore_steal_ptr(&mut self, indices: &[Arc<Index>], saved_start: Option<usize>) {
-        match saved_start {
-            Some(start_val) => {
-                // Find index with this start value
-                for (i, idx) in indices.iter().enumerate() {
-                    if idx.start.load(Ordering::Relaxed) == start_val {
-                        self.steal_ptr = i as u8;
-                        return;
-                    }
-                }
-                // Not found, reset to 2
-                self.steal_ptr = 2.min(indices.len().saturating_sub(1) as u8);
-            }
-            None => {
-                self.steal_ptr = 2.min(indices.len().saturating_sub(1) as u8);
-            }
-        }
     }
 }

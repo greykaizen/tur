@@ -50,9 +50,12 @@ fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "quit" => {
                     // Use the shutdown mechanism
-                    let manager = app.state::<crate::downloads::DownloadManager>();
-                    manager.shutdown_all();
-                    app.exit(0);
+                    let manager = (*app.state::<crate::downloads::ManagerHandle>()).clone();
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        manager.shutdown().await;
+                        app_handle.exit(0);
+                    });
                 }
                 _ => {}
             }
@@ -86,9 +89,13 @@ pub fn handle_close_requested(app: &AppHandle) -> bool {
     // If quit_on_close is true, allow the close (don't prevent)
     if settings.app.quit_on_close {
         // Stop all downloads first
-        let manager = app.state::<crate::downloads::DownloadManager>();
-        manager.shutdown_all();
-        return false; // Allow close
+        let manager = (*app.state::<crate::downloads::ManagerHandle>()).clone();
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            manager.shutdown().await;
+            app_handle.exit(0);
+        });
+        return true; // Prevent default close, let shutdown handle exit
     }
 
     // Otherwise, hide the window (minimize to tray/background)

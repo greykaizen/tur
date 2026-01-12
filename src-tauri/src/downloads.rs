@@ -19,6 +19,7 @@ pub mod index;
 pub mod manager;
 #[cfg(test)]
 pub mod tests;
+pub mod work_request;
 pub mod worker_context;
 pub mod workers;
 
@@ -27,5 +28,5 @@ pub use download::Download;
 pub use headers::parse_deep_link as parse_deep_link_url;
 pub use manager::{
     active_download_count, cancel_download, handle_download_request, is_download_active,
-    pause_download, ControlCommand, DownloadManager, DownloadRequest,
+    pause_download, spawn_manager, ControlCommand, DownloadRequest, ManagerHandle,
 };

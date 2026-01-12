@@ -127,46 +127,23 @@ pub fn run() {
             menu::handle_menu_event(app, event.id().as_ref());
         })
         .setup(|app| {
-            // Initialize and manage DownloadManager
-            let download_manager = downloads::DownloadManager::new();
-            app.manage(download_manager);
+            // Initialize and manage Manager
+            let manager = downloads::manager::spawn_manager(app.handle().clone());
+            app.manage(manager);
 
-            // Start background queue processor
+            // Start background queue processor / auto resume
             let handle_for_bg = app.handle().clone();
-            let manager_for_bg = app.state::<downloads::DownloadManager>();
-            manager_for_bg.start_background_task(handle_for_bg);
-
-            // Auto-resume on startup (runs immediately, not blocked by signal handler)
-            let handle_for_resume = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let manager = handle_for_resume.state::<downloads::DownloadManager>();
-                let settings = settings::load_or_create(&handle_for_resume);
-                if settings.app.auto_resume {
-                    if let Ok(db) = database::Database::initialize(&handle_for_resume).map_err(|e| e.to_string()) {
-                        // Get pending downloads (paused or interrupted), limit to max_concurrent
-                        let limit = if settings.download.max_concurrent > 0 {
-                            settings.download.max_concurrent as usize
-                        } else {
-                            50 // Reasonable default for unlimited
-                        };
-                        if let Ok(queued) = db.get_queued_downloads(limit) {
-                            let resume_ids: Vec<uuid::Uuid> = queued.iter().map(|d| d.id).collect();
-                            if !resume_ids.is_empty() {
-                                tracing::info!("🚀 Auto-resuming {} pending downloads", resume_ids.len());
-                                let request = downloads::manager::DownloadRequest::Resume(resume_ids);
-                                if let Err(e) = manager.handle_request(&handle_for_resume, request).await {
-                                    tracing::error!("Failed to auto-resume downloads: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
+                // Initial short delay to allow app to settle
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let manager = handle_for_bg.state::<downloads::manager::ManagerHandle>();
+                manager.check_queue().await;
             });
 
-            // Start graceful shutdown signal handler (blocks until signal received)
+            // Start graceful shutdown signal handler
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let manager = handle.state::<downloads::DownloadManager>();
+                let manager = handle.state::<downloads::manager::ManagerHandle>();
                 manager.start_signal_handler(handle.clone()).await;
             });
 
